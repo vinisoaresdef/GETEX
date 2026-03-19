@@ -1,0 +1,323 @@
+# getex
+
+Editor de texto modal para terminal Linux, inspirado no Vim. Salva documentos organizados por data na sua Área de Trabalho e tem integração com IA (Google Gemini ou OpenAI).
+
+---
+
+## Instalação
+
+### 1. Baixe o script
+
+Salve o arquivo `getex.py` em qualquer lugar da sua máquina. Por exemplo:
+
+```bash
+~/Downloads/getex.py
+```
+
+### 2. Instale como comando global
+
+```bash
+sudo cp ~/Downloads/getex.py /usr/local/bin/getex
+sudo chmod +x /usr/local/bin/getex
+```
+
+Pronto. A partir daí você pode rodar `getex` de qualquer lugar no terminal.
+
+### 3. Verifique se funcionou
+
+```bash
+getex --help 2>/dev/null || echo "getex instalado com sucesso"
+```
+
+### Alternativa: alias no `.bashrc` / `.zshrc`
+
+Se preferir não usar `sudo`:
+
+```bash
+echo "alias getex='python3 ~/Downloads/getex.py'" >> ~/.bashrc
+source ~/.bashrc
+```
+
+### Dependências
+
+Apenas Python 3 com a biblioteca padrão. Nenhum `pip install` necessário. O módulo `curses` já vem incluso no Python do Linux.
+
+```bash
+python3 --version   # precisa ser 3.6 ou superior
+```
+
+---
+
+## Primeira execução
+
+Na primeira vez que rodar `getex`, um assistente de configuração aparece no terminal:
+
+```
+╔══════════════════════════════════════╗
+║   getex — Configuração Inicial       ║
+╚══════════════════════════════════════╝
+
+Nome da pasta na Área de Trabalho para os documentos? [GetexDocs]:
+Provedor de IA? (gemini/openai) [gemini]:
+Chave de API (gemini) [deixe em branco para depois]:
+```
+
+As respostas ficam salvas em `~/.getex_config` (arquivo JSON editável). Você pode alterar qualquer configuração editando esse arquivo diretamente ou usando o comando `:set key` dentro do editor.
+
+---
+
+## Comandos disponíveis
+
+### `getex` — abre o editor
+
+```bash
+getex
+```
+
+Abre o editor com um buffer vazio pronto para digitação.
+
+### `getex "titulo"` — abre com título
+
+```bash
+getex "reuniao de sprint"
+getex "ideias produto Q3"
+```
+
+O título é incluído no nome do arquivo ao salvar: `DOC_2025-06-15_14-32_reuniao_de_sprint.txt`.
+
+### `getex get all` — navegador de arquivos
+
+```bash
+getex get all
+```
+
+Abre um painel de dois painéis com todos os documentos salvos. Permite navegar, visualizar e abrir qualquer arquivo para edição.
+
+---
+
+## Usando o editor
+
+O getex tem dois modos, como o Vim.
+
+### Modo Comando (tela inicial)
+
+É o modo padrão ao abrir. O fundo da barra de status fica **amarelo**.
+
+| Tecla | Ação |
+|-------|------|
+| `i` | Entra no modo de inserção |
+| `a` | Entra no modo de inserção após o cursor |
+| `o` | Cria nova linha abaixo e entra em inserção |
+| `k` ou `↑` | Move cursor para cima |
+| `j` ou `↓` | Move cursor para baixo |
+| `h` ou `←` | Move cursor para esquerda |
+| `l` ou `→` | Move cursor para direita |
+| `g` | Vai para a primeira linha |
+| `G` | Vai para a última linha |
+| `dd` | Apaga a linha atual |
+| `:` | Abre prompt de comandos |
+
+### Modo Inserção
+
+Ativado pressionando `i`. O fundo da barra de status fica **ciano**.
+
+| Tecla | Ação |
+|-------|------|
+| Digitar | Insere texto normalmente |
+| `Esc` | Volta ao modo comando |
+| `Backspace` | Apaga o caractere anterior |
+| `Delete` | Apaga o caractere à frente |
+| `Enter` | Insere nova linha |
+| `↑ ↓ ← →` | Move o cursor |
+| `Home` / `End` | Início / fim da linha |
+
+---
+
+## Seleção de texto
+
+A seleção funciona no **modo de inserção**. O texto selecionado fica destacado em ciano.
+
+### Selecionar
+
+| Tecla | Seleciona |
+|-------|-----------|
+| `Shift + ↑` | Uma linha acima |
+| `Shift + ↓` | Uma linha abaixo |
+| `Shift + ←` | Um caractere à esquerda |
+| `Shift + →` | Um caractere à direita |
+| `Shift + Home` | Do cursor até o início da linha |
+| `Shift + End` | Do cursor até o fim da linha |
+| `Ctrl + Shift + ←` | Palavra inteira à esquerda |
+| `Ctrl + Shift + →` | Palavra inteira à direita |
+| `Ctrl + Shift + ↑` | Linha inteira para cima |
+| `Ctrl + Shift + ↓` | Linha inteira para baixo |
+| `Ctrl + A` | Tudo |
+
+### Operar sobre a seleção
+
+| Tecla | Ação |
+|-------|------|
+| `Ctrl + C` | Copia para o clipboard interno |
+| `Ctrl + K` | Recorta |
+| `Ctrl + V` | Cola na posição do cursor |
+| `Delete` ou `Backspace` | Apaga a seleção |
+| Qualquer tecla normal | Substitui a seleção pelo que foi digitado |
+| Seta sem Shift ou `Esc` | Cancela a seleção sem apagar nada |
+
+> **Nota:** `Ctrl + X` foi substituído por `Ctrl + K` porque o terminal Linux intercepta `Ctrl + X` antes do editor recebê-lo.
+
+---
+
+## Comandos do prompt `:`
+
+No modo comando, pressione `:` para abrir o prompt. Digite o comando e pressione `Enter`. `Esc` cancela.
+
+| Comando | Ação |
+|---------|------|
+| `:wq` | Salva e fecha |
+| `:q!` | Fecha sem salvar |
+| `:q` | Fecha (só funciona se o buffer estiver vazio) |
+| `:rename Meu Titulo` | Define ou altera o nome do arquivo |
+| `:title Meu Titulo` | Mesmo que `:rename` |
+| `:ai` | Envia o texto para a IA e insere a resposta no buffer |
+| `:set key SUACHAVE` | Define a chave de API sem sair do editor |
+
+---
+
+## Onde os arquivos são salvos
+
+Todos os documentos ficam em:
+
+```
+~/Desktop/
+└── GetexDocs/              ← nome que você escolheu na configuração
+    ├── DOC_2025-06-13_09-15.txt
+    ├── DOC_2025-06-14_11-42_reuniao_sprint.txt
+    └── DOC_2025-06-15_14-32_ideias_produto.txt
+```
+
+### Formato do nome
+
+```
+DOC_YYYY-MM-DD_HH-MM[_titulo].txt
+     ───data───  hora  título (opcional)
+```
+
+A hora é incluída para evitar colisão quando você cria mais de um arquivo no mesmo dia.
+
+### Comportamento ao salvar
+
+| Situação | O que acontece |
+|----------|----------------|
+| Novo documento (`getex`) | Cria um arquivo novo com data e hora |
+| Editar arquivo existente (`getex get all` → Enter) | **Sobrescreve** o arquivo — edições e exclusões são mantidas |
+
+---
+
+## Navegador de arquivos (`getex get all`)
+
+Abre um painel dividido: lista de arquivos à esquerda, preview à direita.
+
+| Tecla | Ação |
+|-------|------|
+| `↑` / `↓` ou `k` / `j` | Navegar entre arquivos |
+| `Enter` | Abrir o arquivo selecionado no editor |
+| `PgUp` / `PgDn` | Rolar o preview sem trocar de arquivo |
+| `Home` / `End` | Ir ao início / fim do preview |
+| `d` | Deletar o arquivo selecionado (pede confirmação `s/n`) |
+| `Esc` ou `q` | Sair do navegador |
+
+---
+
+## Integração com IA
+
+### Configurar Google Gemini (gratuito)
+
+1. Acesse [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)
+2. Crie uma chave gratuita
+3. Configure de um desses jeitos:
+   - No wizard da primeira execução
+   - Editando `~/.getex_config`
+   - Dentro do editor com `:set key SUA_CHAVE`
+
+### Configurar OpenAI
+
+1. Acesse [platform.openai.com/api-keys](https://platform.openai.com/api-keys)
+2. Edite `~/.getex_config` e altere `"ai_provider": "openai"`
+3. Configure a chave normalmente
+
+### Usar a IA
+
+No modo comando, digite `:ai` e pressione `Enter`. O getex pega as últimas 20 linhas do buffer, envia para a IA e insere a resposta diretamente no texto com um separador visual.
+
+---
+
+## Configuração manual
+
+```bash
+nano ~/.getex_config
+```
+
+```json
+{
+  "folder_name": "MeusInsights",
+  "ai_provider": "gemini",
+  "api_key": "AIzaSy..."
+}
+```
+
+---
+
+## Atualizar o getex
+
+Quando uma nova versão do `getex.py` estiver disponível:
+
+```bash
+sudo cp ~/Downloads/getex.py /usr/local/bin/getex
+```
+
+As suas configurações em `~/.getex_config` e todos os documentos salvos são preservados.
+
+---
+
+## Desinstalar
+
+```bash
+sudo rm /usr/local/bin/getex
+rm ~/.getex_config
+```
+
+Os documentos em `~/Desktop/GetexDocs/` não são apagados automaticamente.
+
+---
+
+## Resolução de problemas
+
+**`Esc` demora para responder**
+Já corrigido internamente com `set_escdelay(25)`. Se ainda ocorrer, verifique se a variável de ambiente `ESCDELAY` está definida no seu shell:
+```bash
+echo $ESCDELAY   # se retornar um valor alto, remova do seu .bashrc/.zshrc
+```
+
+**`Ctrl + Shift + seta` não funciona**
+Depende do emulador de terminal enviar as sequências corretas. Funciona no GNOME Terminal, Tilix, Konsole e Alacritty. O `Shift + seta` simples sempre funciona como alternativa.
+
+**Pasta Desktop não existe**
+Algumas distribuições usam nomes diferentes para a Área de Trabalho:
+```bash
+# Ubuntu/Debian em português
+ls ~/Desktop || ls ~/Área\ de\ trabalho
+
+# Se necessário, crie um symlink
+ln -s ~/Área\ de\ trabalho ~/Desktop
+```
+
+**Erro de permissão ao instalar**
+```bash
+# Verifique se /usr/local/bin existe e está no PATH
+echo $PATH | grep /usr/local/bin
+
+# Se não estiver, adicione ao seu .bashrc
+echo 'export PATH="/usr/local/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
