@@ -24,23 +24,140 @@ import os
 import sys
 import json
 import datetime
+import calendar
 
 # ─── Constantes ─────────────────────────────────────────────────────────────
 CONFIG_FILE = os.path.expanduser("~/.getex_config")
 ESC_KEY     = 27
+MAX_FILE_SIZE = 1024 * 1024  # 1 MB - limite para carregar arquivo inteiro
 
 DEFAULT_CONFIG = {
     "folder_name": "GetexDocs",
     "ai_provider": "gemini",
     "api_key":     "",
+    "theme":       "default",
+}
+
+THEMES = {
+    "default": {
+        "bg_fg":     (-1, -1),
+        "insert":    (curses.COLOR_BLACK, curses.COLOR_CYAN),
+        "command":   (curses.COLOR_BLACK, curses.COLOR_YELLOW),
+        "error":     (curses.COLOR_WHITE, curses.COLOR_RED),
+        "linenum":   (curses.COLOR_CYAN, -1),
+        "cmdbar":    (curses.COLOR_WHITE, curses.COLOR_BLUE),
+        "info":      (curses.COLOR_GREEN, -1),
+        "listsel":   (curses.COLOR_BLACK, curses.COLOR_WHITE),
+        "title":     (curses.COLOR_YELLOW, -1),
+        "header":    (curses.COLOR_WHITE, curses.COLOR_MAGENTA),
+        "selection": (curses.COLOR_BLACK, curses.COLOR_CYAN),
+        "aishortcut":(curses.COLOR_BLACK, curses.COLOR_GREEN),
+        "mk_g_line": (curses.COLOR_WHITE, curses.COLOR_GREEN),
+        "mk_r_line": (curses.COLOR_WHITE, curses.COLOR_RED),
+        "mk_g_num":  (curses.COLOR_BLACK, curses.COLOR_GREEN),
+        "mk_r_num":  (curses.COLOR_WHITE, curses.COLOR_RED),
+    },
+    "dark": {
+        "bg_fg":     (curses.COLOR_WHITE, curses.COLOR_BLACK),
+        "insert":    (curses.COLOR_BLACK, curses.COLOR_CYAN),
+        "command":   (curses.COLOR_BLACK, curses.COLOR_YELLOW),
+        "error":     (curses.COLOR_WHITE, curses.COLOR_RED),
+        "linenum":   (curses.COLOR_CYAN, curses.COLOR_BLACK),
+        "cmdbar":    (curses.COLOR_WHITE, curses.COLOR_BLUE),
+        "info":      (curses.COLOR_GREEN, curses.COLOR_BLACK),
+        "listsel":   (curses.COLOR_BLACK, curses.COLOR_WHITE),
+        "title":     (curses.COLOR_YELLOW, curses.COLOR_BLACK),
+        "header":    (curses.COLOR_WHITE, curses.COLOR_MAGENTA),
+        "selection": (curses.COLOR_BLACK, curses.COLOR_CYAN),
+        "aishortcut":(curses.COLOR_BLACK, curses.COLOR_GREEN),
+        "mk_g_line": (curses.COLOR_WHITE, curses.COLOR_GREEN),
+        "mk_r_line": (curses.COLOR_WHITE, curses.COLOR_RED),
+        "mk_g_num":  (curses.COLOR_BLACK, curses.COLOR_GREEN),
+        "mk_r_num":  (curses.COLOR_WHITE, curses.COLOR_RED),
+    },
+    "light": {
+        "bg_fg":     (curses.COLOR_BLACK, curses.COLOR_WHITE),
+        "insert":    (curses.COLOR_WHITE, curses.COLOR_BLUE),
+        "command":   (curses.COLOR_WHITE, curses.COLOR_MAGENTA),
+        "error":     (curses.COLOR_WHITE, curses.COLOR_RED),
+        "linenum":   (curses.COLOR_BLUE, curses.COLOR_WHITE),
+        "cmdbar":    (curses.COLOR_WHITE, curses.COLOR_BLACK),
+        "info":      (curses.COLOR_BLUE, curses.COLOR_WHITE),
+        "listsel":   (curses.COLOR_WHITE, curses.COLOR_BLUE),
+        "title":     (curses.COLOR_MAGENTA, curses.COLOR_WHITE),
+        "header":    (curses.COLOR_BLACK, curses.COLOR_CYAN),
+        "selection": (curses.COLOR_WHITE, curses.COLOR_BLUE),
+        "aishortcut":(curses.COLOR_WHITE, curses.COLOR_BLUE),
+        "mk_g_line": (curses.COLOR_WHITE, curses.COLOR_GREEN),
+        "mk_r_line": (curses.COLOR_WHITE, curses.COLOR_RED),
+        "mk_g_num":  (curses.COLOR_BLACK, curses.COLOR_GREEN),
+        "mk_r_num":  (curses.COLOR_WHITE, curses.COLOR_RED),
+    },
+    "hacker": {
+        "bg_fg":     (curses.COLOR_GREEN, curses.COLOR_BLACK),
+        "insert":    (curses.COLOR_BLACK, curses.COLOR_GREEN),
+        "command":   (curses.COLOR_BLACK, curses.COLOR_GREEN),
+        "error":     (curses.COLOR_BLACK, curses.COLOR_RED),
+        "linenum":   (curses.COLOR_WHITE, curses.COLOR_BLACK),
+        "cmdbar":    (curses.COLOR_BLACK, curses.COLOR_GREEN),
+        "info":      (curses.COLOR_WHITE, curses.COLOR_BLACK),
+        "listsel":   (curses.COLOR_BLACK, curses.COLOR_GREEN),
+        "title":     (curses.COLOR_GREEN, curses.COLOR_BLACK),
+        "header":    (curses.COLOR_BLACK, curses.COLOR_GREEN),
+        "selection": (curses.COLOR_BLACK, curses.COLOR_GREEN),
+        "aishortcut":(curses.COLOR_BLACK, curses.COLOR_GREEN),
+        "mk_g_line": (curses.COLOR_BLACK, curses.COLOR_CYAN),
+        "mk_r_line": (curses.COLOR_WHITE, curses.COLOR_RED),
+        "mk_g_num":  (curses.COLOR_BLACK, curses.COLOR_CYAN),
+        "mk_r_num":  (curses.COLOR_WHITE, curses.COLOR_RED),
+    },
+    "ocean": {
+        "bg_fg":     (curses.COLOR_WHITE, curses.COLOR_BLUE),
+        "insert":    (curses.COLOR_BLUE, curses.COLOR_CYAN),
+        "command":   (curses.COLOR_BLUE, curses.COLOR_CYAN),
+        "error":     (curses.COLOR_WHITE, curses.COLOR_RED),
+        "linenum":   (curses.COLOR_CYAN, curses.COLOR_BLUE),
+        "cmdbar":    (curses.COLOR_BLUE, curses.COLOR_WHITE),
+        "info":      (curses.COLOR_CYAN, curses.COLOR_BLUE),
+        "listsel":   (curses.COLOR_BLUE, curses.COLOR_WHITE),
+        "title":     (curses.COLOR_CYAN, curses.COLOR_BLUE),
+        "header":    (curses.COLOR_BLUE, curses.COLOR_WHITE),
+        "selection": (curses.COLOR_BLUE, curses.COLOR_CYAN),
+        "aishortcut":(curses.COLOR_BLUE, curses.COLOR_CYAN),
+        "mk_g_line": (curses.COLOR_WHITE, curses.COLOR_GREEN),
+        "mk_r_line": (curses.COLOR_WHITE, curses.COLOR_RED),
+        "mk_g_num":  (curses.COLOR_BLUE, curses.COLOR_GREEN),
+        "mk_r_num":  (curses.COLOR_WHITE, curses.COLOR_RED),
+    }
 }
 
 # ─── Config ──────────────────────────────────────────────────────────────────
+def load_env_file():
+    """Carrega variáveis de um arquivo .env na pasta do projeto."""
+    env_path = os.path.expanduser(f"~/.getex/.env")
+    if not os.path.exists(env_path):
+        return {}
+    env_vars = {}
+    try:
+        with open(env_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, _, value = line.partition("=")
+                    env_vars[key.strip()] = value.strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return env_vars
+
 def load_config():
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r") as f:
-                return json.load(f)
+                cfg = json.load(f)
+                env_vars = load_env_file()
+                if "GETEX_API_KEY" in env_vars:
+                    cfg["api_key"] = env_vars["GETEX_API_KEY"]
+                return cfg
         except Exception:
             pass
     return None
@@ -77,50 +194,89 @@ def is_esc(k):
     return k == ESC_KEY or k == "\x1b"
 
 # ─── IA ──────────────────────────────────────────────────────────────────────
+def _make_ai_request(prompt, cfg, timeout=30):
+    """Helper interno para chamadas de API (elimina duplicação)."""
+    import urllib.request
+    import json as _json
+
+    api_key  = cfg.get("api_key", "")
+    if not api_key:
+        return None, "[ERRO] Nenhuma chave de API configurada. Use :set key SUA_CHAVE"
+
+    provider = cfg.get("ai_provider", "gemini")
+    if provider == "gemini":
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"gemini-2.5-flash:generateContent?key={api_key}"
+        )
+        payload = {"contents": [{"parts": [{"text": prompt}]}]}
+        req = urllib.request.Request(
+            url, data=_json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"}, method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = _json.loads(resp.read())
+        return data["candidates"][0]["content"]["parts"][0]["text"].strip(), None
+    else:
+        url = "https://api.openai.com/v1/chat/completions"
+        payload = {
+            "model": "gpt-3.5-turbo",
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 500,
+        }
+        req = urllib.request.Request(
+            url, data=_json.dumps(payload).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            }, method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = _json.loads(resp.read())
+        return data["choices"][0]["message"]["content"].strip(), None
+
 def call_ai(text, cfg):
     try:
-        import urllib.request
-        import json as _json
-        provider = cfg.get("ai_provider", "gemini")
-        api_key  = cfg.get("api_key", "")
-        if not api_key:
-            return "[ERRO] Nenhuma chave de API configurada. Use :set key SUA_CHAVE"
         prompt = (
             "Continue, melhore ou responda ao seguinte texto "
             "de forma útil e concisa:\n\n" + text
         )
-        if provider == "gemini":
-            url = (
-                "https://generativelanguage.googleapis.com/v1beta/models/"
-                f"gemini-pro:generateContent?key={api_key}"
-            )
-            payload = {"contents": [{"parts": [{"text": prompt}]}]}
-            req = urllib.request.Request(
-                url, data=_json.dumps(payload).encode(),
-                headers={"Content-Type": "application/json"}, method="POST"
-            )
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                data = _json.loads(resp.read())
-            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-        else:
-            url = "https://api.openai.com/v1/chat/completions"
-            payload = {
-                "model": "gpt-3.5-turbo",
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 500,
-            }
-            req = urllib.request.Request(
-                url, data=_json.dumps(payload).encode(),
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {api_key}",
-                }, method="POST"
-            )
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                data = _json.loads(resp.read())
-            return data["choices"][0]["message"]["content"].strip()
+        result, err = _make_ai_request(prompt, cfg, timeout=30)
+        if err:
+            return err
+        return result
     except Exception as e:
         return f"[ERRO IA] {e}"
+
+def call_ai_organizer(text, cfg):
+    """
+    Envia o texto bruto para a IA com um prompt especializado em
+    estruturar/reorganizar documentos (requisitos, notas, etc.).
+    Retorna o texto organizado como string.
+    """
+    prompt = (
+        "Você é um especialista em documentação técnica e organização de textos.\n\n"
+        "Analise o texto abaixo e reescreva-o de forma estruturada, clara e profissional. "
+        "Identifique automaticamente o tipo de documento (requisitos, notas de reunião, "
+        "ideias, relatório, etc.) e aplique a estrutura mais adequada para esse tipo.\n\n"
+        "Regras obrigatórias:\n"
+        "- Preserve TODAS as informações do original — nada pode ser removido ou omitido\n"
+        "- Use títulos e seções quando fizer sentido\n"
+        "- Agrupe itens relacionados\n"
+        "- O texto será aberto dentro de um terminal, então use linguagem clara, sem asteriscos, hashtags\n"
+        "- Se for separar tópicos importantes, utilize algo como: ════════════════════════════════════════════[TÓPICO]════════════════════════════════════════════\n"
+        "- Corrija erros de português e melhore a clareza das frases\n"
+        "- Se for uma lista de requisitos, numere-os e categorize-os\n"
+        "- Seja o mais sucinto possível, sem perder informações, mas sendo resumido.\n"
+        "- Use marcadores (- ou •) para listas de itens\n\n"
+        "Texto original:\n\n"
+        + text
+    )
+    result, err = _make_ai_request(prompt, cfg, timeout=60)
+    if err:
+        return err
+    return result
+
 
 # ─── Salvar documento ────────────────────────────────────────────────────────
 def slugify(title):
@@ -203,19 +359,63 @@ def delete_selection(lines, sr, sc, er, ec):
 # ═══════════════════════════════════════════════════════════════════════════════
 # CORES
 # ═══════════════════════════════════════════════════════════════════════════════
-def init_colors():
+def init_colors(cfg=None):
+    if cfg is None:
+        cfg = {}
+    theme_name = cfg.get("theme", "default")
+    if theme_name not in THEMES:
+        theme_name = "default"
+    t = THEMES[theme_name]
+
     curses.start_color()
     curses.use_default_colors()
-    curses.init_pair(1,  curses.COLOR_BLACK,  curses.COLOR_CYAN)     # INSERT
-    curses.init_pair(2,  curses.COLOR_BLACK,  curses.COLOR_YELLOW)   # COMMAND
-    curses.init_pair(3,  curses.COLOR_WHITE,  curses.COLOR_RED)      # erro
-    curses.init_pair(4,  curses.COLOR_CYAN,   -1)                    # nº linha
-    curses.init_pair(5,  curses.COLOR_WHITE,  curses.COLOR_BLUE)     # cmd bar
-    curses.init_pair(6,  curses.COLOR_GREEN,  -1)                    # info
-    curses.init_pair(7,  curses.COLOR_BLACK,  curses.COLOR_WHITE)    # lista sel
-    curses.init_pair(8,  curses.COLOR_YELLOW, -1)                    # título
-    curses.init_pair(9,  curses.COLOR_WHITE,  curses.COLOR_MAGENTA)  # header
-    curses.init_pair(10, curses.COLOR_BLACK,  curses.COLOR_CYAN)     # seleção texto
+    curses.init_pair(1,  t["insert"][0],  t["insert"][1])
+    curses.init_pair(2,  t["command"][0], t["command"][1])
+    curses.init_pair(3,  t["error"][0],   t["error"][1])
+    curses.init_pair(4,  t["linenum"][0], t["linenum"][1])
+    curses.init_pair(5,  t["cmdbar"][0],  t["cmdbar"][1])
+    curses.init_pair(6,  t["info"][0],    t["info"][1])
+    curses.init_pair(7,  t["listsel"][0], t["listsel"][1])
+    curses.init_pair(8,  t["title"][0],   t["title"][1])
+    curses.init_pair(9,  t["header"][0],  t["header"][1])
+    curses.init_pair(10, t["selection"][0], t["selection"][1])
+    curses.init_pair(11, t["aishortcut"][0], t["aishortcut"][1])
+    curses.init_pair(12, t["mk_g_line"][0], t["mk_g_line"][1])
+    curses.init_pair(13, t["mk_r_line"][0], t["mk_r_line"][1])
+    curses.init_pair(14, t["mk_g_num"][0], t["mk_g_num"][1])
+    curses.init_pair(15, t["mk_r_num"][0], t["mk_r_num"][1])
+    curses.init_pair(16, t["bg_fg"][0], t["bg_fg"][1])
+
+# ─── Marcações de linha ────────────────────────────────────────────────────────
+def marks_path(filepath):
+    """Caminho do arquivo .marks paralelo ao .txt."""
+    return filepath + ".marks"
+
+def load_marks(filepath):
+    """Carrega marcações do arquivo .marks. Retorna dict {int: str}."""
+    mp = marks_path(filepath)
+    if not os.path.exists(mp):
+        return {}
+    try:
+        with open(mp, "r") as f:
+            raw = json.load(f)
+        return {int(k): v for k, v in raw.items()}
+    except Exception:
+        return {}
+
+def save_marks(filepath, marks):
+    """Persiste marcações no arquivo .marks."""
+    if not filepath:
+        return
+    mp = marks_path(filepath)
+    try:
+        if marks:
+            with open(mp, "w") as f:
+                json.dump({str(k): v for k, v in marks.items()}, f)
+        elif os.path.exists(mp):
+            os.remove(mp)  # sem marcações → remove arquivo
+    except Exception:
+        pass
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # EDITOR
@@ -246,8 +446,15 @@ class GetexEditor:
         # clipboard interno (lista de strings = linhas)
         self.clipboard: list[str] = []
 
+        # marks: dict {line_index: "green"|"red"}
+        self.marks: dict = {}
+        # carrega marcações persistidas se houver arquivo fonte
+        if source_file:
+            self.marks = load_marks(source_file)
+
         curses.set_escdelay(25)
-        init_colors()
+        init_colors(self.cfg)
+        self.stdscr.bkgd(' ', curses.color_pair(16))
         curses.curs_set(1)
         self.stdscr.keypad(True)
 
@@ -285,6 +492,32 @@ class GetexEditor:
             return False
         return True
 
+    # ── Reindexação de marcações ────────────────────────────────────────────────
+    # As marcações (F2/F3) são guardadas por índice de linha. Sempre que linhas
+    # são inseridas ou removidas, os índices abaixo do ponto de edição precisam
+    # ser deslocados para que a marca continue "grudada" no conteúdo da linha.
+    def _shift_marks_for_insert(self, at_row, count=1):
+        """count linhas foram inseridas em at_row → marcas em idx >= at_row sobem +count."""
+        if not self.marks or count <= 0:
+            return
+        self.marks = {
+            (idx + count if idx >= at_row else idx): color
+            for idx, color in self.marks.items()
+        }
+
+    def _shift_marks_for_delete(self, at_row, count=1):
+        """count linhas a partir de at_row foram removidas → suas marcas somem; abaixo desce -count."""
+        if not self.marks or count <= 0:
+            return
+        new_marks = {}
+        for idx, color in self.marks.items():
+            if idx < at_row:
+                new_marks[idx] = color
+            elif idx >= at_row + count:
+                new_marks[idx - count] = color
+            # at_row <= idx < at_row+count → linha removida, descarta a marca
+        self.marks = new_marks
+
     # ── Operações de clipboard ────────────────────────────────────────────────
     def copy_sel(self):
         if not self.has_sel():
@@ -299,6 +532,7 @@ class GetexEditor:
         sr, sc, er, ec = self.sel_range()
         self.clipboard = extract_selection(self.lines, sr, sc, er, ec)
         self.lines, self.row, self.col = delete_selection(self.lines, sr, sc, er, ec)
+        self._shift_marks_for_delete(sr + 1, er - sr)  # linhas sr+1..er foram fundidas em sr
         self.clear_sel()
         self.status = f"✓ Recortado para clipboard"
 
@@ -307,6 +541,7 @@ class GetexEditor:
             return
         sr, sc, er, ec = self.sel_range()
         self.lines, self.row, self.col = delete_selection(self.lines, sr, sc, er, ec)
+        self._shift_marks_for_delete(sr + 1, er - sr)  # linhas sr+1..er foram fundidas em sr
         self.clear_sel()
 
     def paste(self):
@@ -321,6 +556,7 @@ class GetexEditor:
             self.lines[self.row] = ln[:self.col] + self.clipboard[0] + ln[self.col:]
             self.col += len(self.clipboard[0])
         else:
+            self._shift_marks_for_insert(self.row + 1, len(self.clipboard) - 1)
             ln    = self.lines[self.row]
             head  = ln[:self.col] + self.clipboard[0]
             tail  = self.clipboard[-1] + ln[self.col:]
@@ -343,9 +579,9 @@ class GetexEditor:
         if self.col > 0:
             ln = self.lines[self.row]
             c  = self.col - 1
-            while c > 0 and not ln[c-1].isalnum():
+            while c > 0 and not ln[c].isalnum():
                 c -= 1
-            while c > 0 and ln[c-1].isalnum():
+            while c > 0 and ln[c].isalnum():
                 c -= 1
             self.col = c
         elif self.row > 0:
@@ -378,22 +614,44 @@ class GetexEditor:
         for sr in range(text_h):
             br = sr + self.scroll
             if br < len(self.lines):
+                # cor de marcação da linha (None = sem marca)
+                mark = self.marks.get(br)
+                if mark == "green":
+                    num_pair  = curses.color_pair(14) | curses.A_BOLD
+                    line_pair = curses.color_pair(12)
+                elif mark == "red":
+                    num_pair  = curses.color_pair(15) | curses.A_BOLD
+                    line_pair = curses.color_pair(13)
+                else:
+                    num_pair  = curses.color_pair(4)
+                    line_pair = curses.color_pair(16)
                 # número de linha
                 try:
-                    self.stdscr.addstr(sr, 0, f"{br+1:>4} ", curses.color_pair(4))
+                    self.stdscr.addstr(sr, 0, f"{br+1:>4} ", num_pair)
                 except curses.error:
                     pass
-                # conteúdo da linha, char a char para highlight de seleção
+                # conteúdo da linha, char a char para highlight de seleção ou marcação
                 ln   = self.lines[br]
                 disp = ln[:w - gutter - 1]
                 for ci, ch in enumerate(disp):
-                    attr = sel_pair if self.in_selection(br, ci) else 0
+                    if self.in_selection(br, ci):
+                        attr = sel_pair
+                    else:
+                        attr = line_pair
                     try:
                         self.stdscr.addch(sr, gutter + ci, ch, attr)
                     except curses.error:
                         pass
-                # espaço após fim da linha — highlight se seleção passa por aqui
-                if self.in_selection(br, len(ln)):
+                # espaço após fim da linha
+                end_attr = sel_pair if self.in_selection(br, len(ln)) else line_pair
+                # preenche o resto da linha com a cor de marcação
+                rest = w - gutter - len(disp) - 1
+                if rest > 0 and line_pair:
+                    try:
+                        self.stdscr.addstr(sr, gutter + len(disp), " " * rest, line_pair)
+                    except curses.error:
+                        pass
+                elif self.in_selection(br, len(ln)):
                     try:
                         self.stdscr.addch(sr, gutter + len(disp), " ", sel_pair)
                     except curses.error:
@@ -429,7 +687,7 @@ class GetexEditor:
             elif self.status:
                 disp_cmd = self.status
             else:
-                disp_cmd = "  'i' inserir | ':rename' nomear | ':wq' salvar | Shift+↑↓←→ selecionar"
+                disp_cmd = "  'i' inserir | F2 ● | F3 ● | ':help' comandos | ':config' ajustes | ':' cmd"
             cpair = curses.color_pair(3) if self.status.startswith("[") else curses.color_pair(5)
         else:
             if self.has_sel():
@@ -466,14 +724,34 @@ class GetexEditor:
     # ── Executar comando ──────────────────────────────────────────────────────
     def run_cmd(self, cmd):
         cmd = cmd.strip()
+        if cmd == "theme":
+            original_theme = self.cfg.get("theme", "default")
+            tm = ThemeMenu(self.stdscr, self.cfg)
+            if not tm.run():
+                self.cfg["theme"] = original_theme
+            init_colors(self.cfg)
+            self.stdscr.bkgd(' ', curses.color_pair(16))
+            self.status = f"✓ Tema: {self.cfg.get('theme', 'default').capitalize()}"
+            return "STAY", None
+        if cmd in ("help", "h", "ajuda"):
+            self.show_help_screen()
+            return "STAY", None
+        if cmd in ("config", "cfg", "settings"):
+            cm = ConfigMenu(self.stdscr, self.cfg)
+            cm.run()
+            init_colors(self.cfg)
+            self.stdscr.bkgd(' ', curses.color_pair(16))
+            curses.curs_set(1)
+            self.status = "✓ Configurações atualizadas"
+            return "STAY", None
         if cmd == "wq":
             if self.source_file:
-                # Editando arquivo existente → sobrescreve
                 path = save_document(self.lines, self.cfg,
                                      filepath=self.source_file, overwrite=True)
             else:
-                # Nova sessão → gera nome com data+hora (+ título se houver)
                 path = save_document(self.lines, self.cfg, title=self.title or None)
+                self.source_file = path  # registra para salvar marks
+            save_marks(self.source_file, self.marks)
             return "QUIT", f"✓ Salvo em {path}"
         if cmd == "q!":
             return "QUIT", ""
@@ -527,6 +805,109 @@ class GetexEditor:
             return "STAY", None
         self.status = f"[!] Comando desconhecido: :{cmd}"
         return "STAY", None
+
+    # ── Tela de ajuda ( :help ) ────────────────────────────────────────────────
+    def show_help_screen(self):
+        """Overlay rolável com a lista completa de comandos do getex."""
+        help_lines = [
+            "",
+            "  ╔══════════════════════════════════════════════════════╗",
+            "  ║              GETEX — Lista de Comandos               ║",
+            "  ╚══════════════════════════════════════════════════════╝",
+            "",
+            "[ Modo de Comando ]  (pressione Esc para ativar)",
+            "  i               Inserir na posição do cursor",
+            "  a               Inserir após o cursor",
+            "  o               Abrir nova linha abaixo e inserir",
+            "  h j k l         Mover cursor (←  ↓  ↑  →)",
+            "  ← ↑ → ↓         Mover cursor",
+            "  g / G           Ir para a primeira / última linha",
+            "  dd              Apagar a linha atual",
+            "  F2              Marcar/desmarcar a linha em verde ●",
+            "  F3              Marcar/desmarcar a linha em vermelho ●",
+            "  :               Abrir a barra de comandos",
+            "",
+            "[ Barra de Comandos ( : ) ]",
+            "  :wq             Salvar o documento e sair",
+            "  :q              Sair (bloqueia se houver texto não salvo)",
+            "  :q!             Sair descartando as alterações",
+            "  :ai             Enviar o texto para a IA continuar/responder",
+            "  :config         Abrir as configurações do sistema",
+            "  :theme          Trocar o tema de cores",
+            "  :rename <nome>  Renomear o arquivo / definir título",
+            "  :title <nome>   (igual a :rename)",
+            "  :set key <ch>   Definir a chave de API de IA",
+            "  :help           Mostrar esta tela de ajuda",
+            "",
+            "[ Modo de Inserção ]",
+            "  Esc             Voltar ao modo de comando",
+            "  Ctrl+A          Selecionar todo o texto",
+            "  Ctrl+C          Copiar a seleção",
+            "  Ctrl+K          Recortar (Ctrl+X é usado pelo terminal)",
+            "  Ctrl+V          Colar",
+            "  Shift+setas     Selecionar texto",
+            "  Ctrl+Shift+←/→  Selecionar palavra inteira",
+            "  Shift+Home/End  Selecionar até o início/fim da linha",
+            "  Del / Backspace Apagar a seleção ou um caractere",
+            "",
+            "[ Navegador de Arquivos ]  (getex get all)",
+            "  ↑ ↓  /  j k     Navegar pela lista de arquivos",
+            "  Enter           Abrir o arquivo no editor",
+            "  c               Mostrar/ocultar o calendário",
+            "  ← →  /  h l     Trocar de dia (com calendário ativo)",
+            "  r               Reorganizar o arquivo com IA",
+            "  d               Deletar o arquivo selecionado",
+            "  PgUp / PgDn     Rolar o preview",
+            "  q / Esc         Sair do navegador",
+            "",
+        ]
+        curses.curs_set(0)
+        top = 0
+        while True:
+            self.stdscr.erase()
+            h, w = self.stdscr.getmaxyx()
+            view_h  = h - 1
+            max_top = max(0, len(help_lines) - view_h)
+            top = max(0, min(top, max_top))
+            for i in range(view_h):
+                li = top + i
+                if li >= len(help_lines):
+                    break
+                line = help_lines[li]
+                if line.startswith("["):
+                    pair = curses.color_pair(8) | curses.A_BOLD
+                elif any(c in line for c in ("╔", "║", "╚")):
+                    pair = curses.color_pair(6) | curses.A_BOLD
+                else:
+                    pair = curses.color_pair(16)
+                try:
+                    self.stdscr.addstr(i, 0, line[:w-1], pair)
+                except curses.error:
+                    pass
+            footer = " ↑↓ rolar │ PgUp/PgDn │ q/Esc/Enter fechar "
+            if max_top > 0:
+                footer += f"│ {top+1}-{min(top+view_h, len(help_lines))}/{len(help_lines)} "
+            try:
+                self.stdscr.addstr(h - 1, 0, footer[:w].ljust(w - 1), curses.color_pair(5))
+            except curses.error:
+                pass
+            self.stdscr.refresh()
+            k = self.stdscr.get_wch()
+            if is_esc(k) or is_enter(k) or k in ("q", "Q"):
+                break
+            elif k in (curses.KEY_UP, "k"):
+                top -= 1
+            elif k in (curses.KEY_DOWN, "j"):
+                top += 1
+            elif k == curses.KEY_PPAGE:
+                top -= view_h
+            elif k == curses.KEY_NPAGE:
+                top += view_h
+            elif k == curses.KEY_HOME:
+                top = 0
+            elif k == curses.KEY_END:
+                top = max_top
+        curses.curs_set(1)
 
     def capture_command(self):
         self.cmd_buf = ""
@@ -612,6 +993,7 @@ class GetexEditor:
                         elif self.row < len(self.lines) - 1:
                             self.lines[self.row] = ln + self.lines[self.row+1]
                             self.lines.pop(self.row+1)
+                            self._shift_marks_for_delete(self.row + 1, 1)
                     continue
 
                 # ── Backspace com seleção ─────────────────────────────────
@@ -628,6 +1010,7 @@ class GetexEditor:
                         self.col = len(prev)
                         self.lines[self.row-1] = prev + self.lines[self.row]
                         self.lines.pop(self.row)
+                        self._shift_marks_for_delete(self.row, 1)
                         self.row -= 1
                     continue
 
@@ -635,6 +1018,7 @@ class GetexEditor:
                 if is_enter(k):
                     if self.has_sel():
                         self.delete_sel()
+                    self._shift_marks_for_insert(self.row + 1, 1)
                     ln = self.lines[self.row]
                     self.lines[self.row] = ln[:self.col]
                     self.lines.insert(self.row + 1, ln[self.col:])
@@ -803,6 +1187,7 @@ class GetexEditor:
                     if self.col < len(self.lines[self.row]):
                         self.col += 1
                 elif k == "o":
+                    self._shift_marks_for_insert(self.row + 1, 1)
                     self.lines.insert(self.row + 1, "")
                     self.row += 1
                     self.col  = 0
@@ -836,10 +1221,30 @@ class GetexEditor:
                     if nk == "d":
                         if len(self.lines) > 1:
                             self.lines.pop(self.row)
+                            self._shift_marks_for_delete(self.row, 1)
                             self.row = min(self.row, len(self.lines) - 1)
                         else:
                             self.lines[0] = ""
+                            self.marks.pop(0, None)
                         self.col = 0
+
+                # ── F2: marca verde / desmarca ────────────────────────
+                elif k == curses.KEY_F2:
+                    if self.marks.get(self.row) == "green":
+                        del self.marks[self.row]          # desmarca
+                        self.status = "  Marcação removida"
+                    else:
+                        self.marks[self.row] = "green"    # marca verde
+                        self.status = "  ● Linha marcada em verde"
+
+                # ── F3: marca vermelho / desmarca ─────────────────────
+                elif k == curses.KEY_F3:
+                    if self.marks.get(self.row) == "red":
+                        del self.marks[self.row]          # desmarca
+                        self.status = "  Marcação removida"
+                    else:
+                        self.marks[self.row] = "red"      # marca vermelha
+                        self.status = "  ● Linha marcada em vermelho"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -863,25 +1268,55 @@ class FilesBrowser:
     def __init__(self, stdscr, cfg):
         self.stdscr   = stdscr
         self.cfg      = cfg
-        self.files    = list_docs(cfg)
+        self.all_files = list_docs(cfg)
+        
+        self.show_calendar = False
+        self.cal_date      = datetime.date.today()
+        self.dates_with_files = set()
+        
+        self.files    = self.all_files
         self.sel      = 0
         self.v_scroll = 0
         self.p_scroll = 0
+        
+        self._update_dates_with_files()
 
         curses.set_escdelay(25)
-        init_colors()
+        init_colors(self.cfg)
+        self.stdscr.bkgd(' ', curses.color_pair(16))
         curses.curs_set(0)
         self.stdscr.keypad(True)
 
+    def _update_dates_with_files(self):
+        self.dates_with_files.clear()
+        for f in self.all_files:
+            dt = datetime.datetime.fromtimestamp(f[2]).date()
+            self.dates_with_files.add(dt)
+
+    def update_files_list(self):
+        self.all_files = list_docs(self.cfg)
+        self._update_dates_with_files()
+        if self.show_calendar:
+            self.files = [f for f in self.all_files if datetime.datetime.fromtimestamp(f[2]).date() == self.cal_date]
+        else:
+            self.files = self.all_files
+        if self.sel >= len(self.files):
+            self.sel = max(0, len(self.files) - 1)
+
     def load_preview(self):
         if not self.files:
-            return []
+            return [], {}
         fpath = self.files[self.sel][0]
         try:
+            fsize = os.path.getsize(fpath)
+            if fsize > MAX_FILE_SIZE:
+                return [f"[Arquivo grande - abra para editar]"], {}
             with open(fpath, "r", encoding="utf-8", errors="replace") as f:
-                return f.read().splitlines()
+                lines = f.read().splitlines()
         except Exception as e:
-            return [f"[Erro: {e}]"]
+            return [f"[Erro: {e}]"], {}
+        marks = load_marks(fpath)
+        return lines, marks
 
     def render(self):
         self.stdscr.erase()
@@ -929,36 +1364,88 @@ class FilesBrowser:
             max_fn = list_w - len(meta) - 3
             label  = fname if len(fname) <= max_fn else fname[:max_fn-1] + "…"
             line   = f" {arrow} {label}".ljust(list_w - len(meta)) + meta
-            pair   = curses.color_pair(7) | curses.A_BOLD if fi == self.sel else 0
+            pair   = curses.color_pair(7) | curses.A_BOLD if fi == self.sel else curses.color_pair(16)
             try:
                 self.stdscr.addstr(row, 0, line[:list_w], pair)
             except curses.error:
                 pass
 
-        prev_lines = self.load_preview()
+        prev_lines, prev_marks = self.load_preview()
+        
+        calendar.setfirstweekday(calendar.SUNDAY)
+        cal_offset = 0
+        if self.show_calendar:
+            cal_offset = 9
+            year = self.cal_date.year
+            month = self.cal_date.month
+            meses = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
+            month_name = f"{meses[month]} {year}"
+            
+            try:
+                self.stdscr.addstr(1, prev_x + 1, f" {month_name} ".center(20), curses.color_pair(8) | curses.A_BOLD)
+                self.stdscr.addstr(2, prev_x + 1, "Do Se Te Qu Qu Se Sa".ljust(prev_w), curses.color_pair(4))
+            except curses.error:
+                pass
+                
+            weeks = calendar.monthcalendar(year, month)
+            day_y = 3
+            for week in weeks:
+                if sum(week) == 0: continue
+                for c_idx, day in enumerate(week):
+                    if day == 0:
+                        continue
+                    day_date = datetime.date(year, month, day)
+                    has_file = day_date in self.dates_with_files
+                    is_selected = (day_date == self.cal_date)
+                    
+                    attr = curses.color_pair(16)
+                    if is_selected:
+                        attr = curses.color_pair(7) | curses.A_BOLD
+                    elif has_file:
+                        attr = curses.color_pair(12) | curses.A_BOLD
+                        
+                    x_pos = prev_x + 1 + c_idx * 3
+                    try:
+                        self.stdscr.addstr(day_y, x_pos, f"{day:>2}", attr)
+                        if has_file:
+                            self.stdscr.addstr(day_y, x_pos+2, "•", curses.color_pair(12) | curses.A_BOLD)
+                    except curses.error:
+                        pass
+                day_y += 1
+
         if not self.files:
             try:
-                self.stdscr.addstr(2, prev_x + 2, "Nenhum arquivo encontrado.",
+                self.stdscr.addstr(2 + cal_offset, prev_x + 2, "Nenhum arquivo encontrado.",
                                    curses.color_pair(3))
             except curses.error:
                 pass
         else:
             fname = self.files[self.sel][1]
             try:
-                self.stdscr.addstr(1, prev_x + 1,
+                self.stdscr.addstr(1 + cal_offset, prev_x + 1,
                     f" {fname} "[:prev_w], curses.color_pair(8) | curses.A_BOLD)
             except curses.error:
                 pass
-            for pi in range(content_h - 1):
+            for pi in range(content_h - 1 - cal_offset):
                 li  = pi + self.p_scroll
-                row = pi + 2
+                row = pi + 2 + cal_offset
                 if li < len(prev_lines):
+                    mark = prev_marks.get(li)
+                    if mark == "green":
+                        pair = curses.color_pair(12) | curses.A_BOLD
+                    elif mark == "red":
+                        pair = curses.color_pair(13) | curses.A_BOLD
+                    else:
+                        pair = curses.color_pair(16)
                     try:
-                        self.stdscr.addstr(row, prev_x + 1, prev_lines[li][:prev_w - 1])
+                        line_text = prev_lines[li][:prev_w - 1]
+                        if mark:
+                            line_text = line_text.ljust(prev_w - 1)
+                        self.stdscr.addstr(row, prev_x + 1, line_text, pair)
                     except curses.error:
                         pass
 
-        hints = " ↑↓ navegar │ Enter abrir/editar │ d deletar │ PgUp/PgDn preview │ Esc/q sair "
+        hints = " ↑↓ navegar │ ◀▶ trocar dia │ c calendário │ r organizar com IA │ d deletar │ Enter editar │ q sair "
         try:
             self.stdscr.addstr(h - 2, 0, hints[:w].ljust(w - 1), curses.color_pair(5))
         except curses.error:
@@ -971,6 +1458,95 @@ class FilesBrowser:
                 pass
 
         self.stdscr.refresh()
+
+    def ai_organize(self):
+        """
+        Tecla r no navegador:
+        - Lê o arquivo selecionado
+        - Envia para a IA com prompt de organização
+        - Sobrescreve o arquivo original com o resultado
+        """
+        if not self.files:
+            return
+
+        fpath, fname, _ = self.files[self.sel]
+
+        # Lê o conteúdo original
+        try:
+            with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+                original_text = f.read()
+        except Exception as e:
+            self._show_msg(f" [ERRO] Leitura: {e} ", curses.color_pair(3), wait=True)
+            return
+
+        if not original_text.strip():
+            self._show_msg(" [!] Arquivo vazio — nada para organizar. ", curses.color_pair(3), wait=True)
+            return
+
+        # ── Feedback: limpa tela e mostra spinner ─────────────────────────
+        self.stdscr.erase()
+        h, w = self.stdscr.getmaxyx()
+        lines_msg = [
+            "",
+            "  ╔══════════════════════════════════════════╗",
+            "  ║                                          ║",
+            "  ║   ⏳  Organizando documento com IA...   ║",
+            "  ║                                          ║",
+            f"  ║   Arquivo: {fname[:30]:<30}  ║",
+            "  ║                                          ║",
+            "  ║   Aguarde — isso pode levar até 30s.    ║",
+            "  ║                                          ║",
+            "  ╚══════════════════════════════════════════╝",
+        ]
+        start_row = max(0, h // 2 - len(lines_msg) // 2)
+        for i, ln in enumerate(lines_msg):
+            try:
+                self.stdscr.addstr(start_row + i, 0, ln[:w],
+                                   curses.color_pair(11) | curses.A_BOLD)
+            except curses.error:
+                pass
+        self.stdscr.refresh()
+
+        # ── Chamada à IA ──────────────────────────────────────────────────
+        organized = call_ai_organizer(original_text, self.cfg)
+
+        if organized.startswith("[ERRO"):
+            self._show_msg(f" {organized[:w-4]} ", curses.color_pair(3), wait=True)
+            return
+
+        # ── Sobrescreve o arquivo atual ───────────────────────────────────
+        try:
+            with open(fpath, "w", encoding="utf-8") as f:
+                f.write(organized)
+        except Exception as e:
+            self._show_msg(f" [ERRO] Salvar: {e} ", curses.color_pair(3), wait=True)
+            return
+
+        # ── Recarrega lista mantendo seleção no mesmo arquivo ─────────────
+        cur_sel = self.sel
+        self.update_files_list()
+        self.sel      = min(cur_sel, max(0, len(self.files) - 1)) if self.files else 0
+        self.p_scroll = 0
+
+        # redesenha a lista
+        self.render()
+
+        self._show_msg(
+            f" ✓  Documento organizado e salvo: {fname}  — pressione qualquer tecla ",
+            curses.color_pair(11) | curses.A_BOLD,
+            wait=True
+        )
+
+    def _show_msg(self, msg, pair, wait=False):
+        """Exibe mensagem temporária na última linha do navegador."""
+        h, w = self.stdscr.getmaxyx()
+        try:
+            self.stdscr.addstr(h - 1, 0, msg[:w].ljust(w - 1), pair)
+        except curses.error:
+            pass
+        self.stdscr.refresh()
+        if wait:
+            self.stdscr.get_wch()  # aguarda qualquer tecla
 
     def confirm_delete(self, fname):
         h, w = self.stdscr.getmaxyx()
@@ -990,8 +1566,12 @@ class FilesBrowser:
 
     def open_file(self, fpath):
         try:
-            with open(fpath, "r", encoding="utf-8", errors="replace") as f:
-                initial = f.read().splitlines()
+            fsize = os.path.getsize(fpath)
+            if fsize > MAX_FILE_SIZE:
+                initial = [f"[ERRO] Arquivo muito grande ({fsize//1024}KB). Máximo: {MAX_FILE_SIZE//1024}KB]"]
+            else:
+                with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+                    initial = f.read().splitlines()
         except Exception as e:
             initial = [f"[Erro: {e}]"]
 
@@ -1019,21 +1599,45 @@ class FilesBrowser:
                 if self.sel < len(self.files) - 1:
                     self.sel     += 1
                     self.p_scroll = 0
+            elif k in ("c", "C"):
+                self.show_calendar = not self.show_calendar
+                self.update_files_list()
+                self.v_scroll = 0
+            elif k in (curses.KEY_LEFT, "h"):
+                if self.show_calendar:
+                    self.cal_date -= datetime.timedelta(days=1)
+                    self.update_files_list()
+                    self.v_scroll = 0
+                    self.p_scroll = 0
+                else:
+                    self._show_msg("  Pressione 'c' para ativar o calendário ", curses.color_pair(5))
+            elif k in (curses.KEY_RIGHT, "l"):
+                if self.show_calendar:
+                    self.cal_date += datetime.timedelta(days=1)
+                    self.update_files_list()
+                    self.v_scroll = 0
+                    self.p_scroll = 0
             elif is_enter(k):
                 if self.files:
-                    self.open_file(self.files[self.sel][0])
-                    self.files = list_docs(self.cfg)
-                    self.sel   = min(self.sel, max(0, len(self.files) - 1))
+                    current_fpath = self.files[self.sel][0]
+                    self.open_file(current_fpath)
+                    self.update_files_list()
+                    if self.files:
+                        new_idx = next(
+                            (i for i, f in enumerate(self.files) if f[0] == current_fpath),
+                            self.sel
+                        )
+                        self.sel = new_idx
             elif k == curses.KEY_PPAGE:
                 self.p_scroll = max(0, self.p_scroll - 10)
             elif k == curses.KEY_NPAGE:
-                prev = self.load_preview()
+                prev, _ = self.load_preview()
                 h, _ = self.stdscr.getmaxyx()
                 self.p_scroll = min(self.p_scroll + 10, max(0, len(prev) - (h - 4)))
             elif k == curses.KEY_HOME:
                 self.p_scroll = 0
             elif k == curses.KEY_END:
-                prev = self.load_preview()
+                prev, _ = self.load_preview()
                 h, _ = self.stdscr.getmaxyx()
                 self.p_scroll = max(0, len(prev) - (h - 4))
             elif k == "d":
@@ -1041,17 +1645,307 @@ class FilesBrowser:
                     fname = self.files[self.sel][1]
                     if self.confirm_delete(fname):
                         os.remove(self.files[self.sel][0])
-                        self.files    = list_docs(self.cfg)
-                        self.sel      = min(self.sel, max(0, len(self.files) - 1))
+                        self.update_files_list()
                         self.p_scroll = 0
+            elif k in ("r", "R"):
+                self.ai_organize()
+                self.p_scroll = 0
             elif is_esc(k) or k in ("q", "Q"):
                 return
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# MENU DE TEMAS
+# ═══════════════════════════════════════════════════════════════════════════════
+class ThemeMenu:
+    def __init__(self, stdscr, cfg):
+        self.stdscr = stdscr
+        self.cfg    = cfg
+        self.themes = list(THEMES.keys())
+        current = self.cfg.get("theme", "default")
+        try:
+            self.sel = self.themes.index(current)
+        except ValueError:
+            self.sel = 0
+
+    def render(self):
+        self.stdscr.erase()
+        h, w = self.stdscr.getmaxyx()
+
+        title = " :: Escolha o Tema :: "
+        try:
+            self.stdscr.addstr(2, max(0, w//2 - len(title)//2), title, curses.color_pair(8) | curses.A_BOLD)
+        except curses.error:
+            pass
+
+        start_y = 5
+        for i, tname in enumerate(self.themes):
+            prefix = "▶ " if i == self.sel else "  "
+            display_name = prefix + tname.capitalize()
+            pair = curses.color_pair(7) | curses.A_BOLD if i == self.sel else curses.color_pair(16)
+            x_pos = max(0, w//2 - 10)
+            try:
+                self.stdscr.addstr(start_y + i, x_pos, display_name.ljust(20), pair)
+            except curses.error:
+                pass
+
+        hint = " ↑↓ navegar │ Enter selecionar │ Esc cancelar "
+        try:
+            self.stdscr.addstr(h - 2, 0, hint[:w].ljust(w - 1), curses.color_pair(5))
+        except curses.error:
+            pass
+
+        self.stdscr.refresh()
+
+    def run(self):
+        original_theme = self.cfg.get("theme", "default")
+        while True:
+            self.render()
+            try:
+                k = self.stdscr.get_wch()
+            except curses.error:
+                continue
+
+            if k in (curses.KEY_UP, "k"):
+                if self.sel > 0:
+                    self.sel -= 1
+                init_colors({"theme": self.themes[self.sel]})
+                self.stdscr.bkgd(' ', curses.color_pair(16))
+            elif k in (curses.KEY_DOWN, "j"):
+                if self.sel < len(self.themes) - 1:
+                    self.sel += 1
+                init_colors({"theme": self.themes[self.sel]})
+                self.stdscr.bkgd(' ', curses.color_pair(16))
+            elif is_enter(k):
+                self.cfg["theme"] = self.themes[self.sel]
+                save_config(self.cfg)
+                return True
+            elif is_esc(k) or k in ("q", "Q"):
+                init_colors({"theme": original_theme})
+                self.stdscr.bkgd(' ', curses.color_pair(16))
+                return False
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MENU DE CONFIGURAÇÕES  ( :config )
+# ═══════════════════════════════════════════════════════════════════════════════
+class ConfigMenu:
+    """Menu interativo para ajustar e persistir as configurações do getex."""
+
+    LABELS = {
+        "folder":   "Pasta dos documentos",
+        "theme":    "Tema de cores",
+        "provider": "Provedor de IA",
+        "api_key":  "Chave de API",
+    }
+
+    def __init__(self, stdscr, cfg):
+        self.stdscr  = stdscr
+        self.cfg     = cfg
+        self.entries = ["folder", "theme", "provider", "api_key"]
+        self.sel     = 0
+        self.status  = ""
+
+    def _value(self, key):
+        if key == "folder":
+            return f"~/Desktop/{self.cfg.get('folder_name', 'GetexDocs')}"
+        if key == "theme":
+            return self.cfg.get("theme", "default").capitalize()
+        if key == "provider":
+            return self.cfg.get("ai_provider", "gemini")
+        if key == "api_key":
+            return "•••••••• (definida)" if self.cfg.get("api_key", "") else "(não definida)"
+        return ""
+
+    def render(self):
+        self.stdscr.erase()
+        h, w = self.stdscr.getmaxyx()
+
+        title = " :: Configurações do getex :: "
+        try:
+            self.stdscr.addstr(2, max(0, w//2 - len(title)//2), title,
+                               curses.color_pair(8) | curses.A_BOLD)
+        except curses.error:
+            pass
+
+        x0 = max(2, w//2 - 30)
+        for i, key in enumerate(self.entries):
+            prefix = "▶ " if i == self.sel else "  "
+            label  = self.LABELS[key]
+            value  = self._value(key)
+            pair   = curses.color_pair(7) | curses.A_BOLD if i == self.sel else curses.color_pair(16)
+            line   = f"{prefix}{label:<22}: {value}"
+            try:
+                self.stdscr.addstr(5 + i * 2, x0, line[:w - x0 - 1], pair)
+            except curses.error:
+                pass
+
+        cfg_loc = f" Config salva em: {CONFIG_FILE} "
+        try:
+            self.stdscr.addstr(5 + len(self.entries) * 2 + 1, x0, cfg_loc[:w - x0 - 1],
+                               curses.color_pair(4))
+        except curses.error:
+            pass
+
+        if self.status:
+            try:
+                self.stdscr.addstr(h - 3, 0, self.status[:w].ljust(w - 1),
+                                   curses.color_pair(6) | curses.A_BOLD)
+            except curses.error:
+                pass
+
+        hint = " ↑↓ navegar │ Enter alterar │ Esc/q voltar "
+        try:
+            self.stdscr.addstr(h - 2, 0, hint[:w].ljust(w - 1), curses.color_pair(5))
+        except curses.error:
+            pass
+
+        self.stdscr.refresh()
+
+    def prompt_text(self, label, default="", mask=False):
+        """Captura uma linha de texto na base da tela. Retorna None se cancelado (Esc)."""
+        buf = default
+        curses.curs_set(1)
+        while True:
+            h, w = self.stdscr.getmaxyx()
+            shown  = ("•" * len(buf)) if mask else buf
+            prompt = f" {label}: {shown}"
+            try:
+                self.stdscr.addstr(h - 1, 0, prompt[:w].ljust(w - 1), curses.color_pair(2))
+                self.stdscr.move(h - 1, min(len(prompt), w - 1))
+            except curses.error:
+                pass
+            self.stdscr.refresh()
+            k = self.stdscr.get_wch()
+            if is_enter(k):
+                break
+            elif is_esc(k):
+                buf = None
+                break
+            elif is_backspace(k):
+                buf = buf[:-1]
+            elif isinstance(k, str) and len(k) == 1 and ord(k) >= 32:
+                buf += k
+        curses.curs_set(0)
+        return buf
+
+    def activate(self, key):
+        if key == "folder":
+            val = self.prompt_text("Nome da pasta (em ~/Desktop)",
+                                   self.cfg.get("folder_name", "GetexDocs"))
+            if val is not None and val.strip():
+                self.cfg["folder_name"] = val.strip()
+                try:
+                    os.makedirs(os.path.expanduser(f"~/Desktop/{val.strip()}"), exist_ok=True)
+                except Exception:
+                    pass
+                save_config(self.cfg)
+                self.status = f"✓ Pasta definida: {val.strip()}"
+        elif key == "theme":
+            tm = ThemeMenu(self.stdscr, self.cfg)
+            tm.run()  # ThemeMenu já persiste a escolha e reverte no Esc
+            init_colors(self.cfg)
+            self.stdscr.bkgd(' ', curses.color_pair(16))
+            curses.curs_set(0)
+            self.status = f"✓ Tema: {self.cfg.get('theme', 'default').capitalize()}"
+        elif key == "provider":
+            cur = self.cfg.get("ai_provider", "gemini")
+            self.cfg["ai_provider"] = "openai" if cur == "gemini" else "gemini"
+            save_config(self.cfg)
+            self.status = f"✓ Provedor de IA: {self.cfg['ai_provider']}"
+        elif key == "api_key":
+            val = self.prompt_text("Nova chave de API (vazio cancela)", "", mask=True)
+            if val is not None and val.strip():
+                self.cfg["api_key"] = val.strip()
+                save_config(self.cfg)
+                self.status = "✓ Chave de API salva"
+
+    def run(self):
+        curses.curs_set(0)
+        while True:
+            self.render()
+            try:
+                k = self.stdscr.get_wch()
+            except curses.error:
+                continue
+
+            if k in (curses.KEY_UP, "k"):
+                if self.sel > 0:
+                    self.sel -= 1
+            elif k in (curses.KEY_DOWN, "j"):
+                if self.sel < len(self.entries) - 1:
+                    self.sel += 1
+            elif is_enter(k):
+                self.activate(self.entries[self.sel])
+            elif is_esc(k) or k in ("q", "Q"):
+                return
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # PONTO DE ENTRADA
 # ═══════════════════════════════════════════════════════════════════════════════
+def show_help():
+    help_text = """
+╔══════════════════════════════════════════════════════════════════════════╗
+║                                GETEX - AJUDA                             ║
+╚══════════════════════════════════════════════════════════════════════════╝
+getex é um editor de texto modal para terminal focado em produtividade 
+e integração com Inteligência Artificial.
+
+[ Uso Básico ]
+  getex                  Abre um novo documento no editor.
+  getex <título>         Abre um novo documento com o título especificado.
+  getex get all          Abre o navegador de arquivos (Explorador).
+  getex --help, -h       Exibe esta tela de ajuda.
+
+[ Editor - Modo de Comando ] (Pressione Esc para ativar)
+  i, a, o                Entrar no modo de Inserção para digitar.
+  h, j, k, l             Navegar o cursor (Esquerda, Baixo, Cima, Direita).
+  Setas Direcionais      Navegar o cursor.
+  g / G                  Ir para a primeira linha / última linha do arquivo.
+  dd                     Apagar a linha atual inteira.
+  F2 / F3                Marcar a linha atual com bolinha Verde (F2) ou Vermelha (F3).
+  :                      Abrir barra de comandos (veja os comandos abaixo).
+
+[ Editor - Comandos da Barra ( : ) ]
+  :wq                    Salvar o documento e sair.
+  :q!                    Sair descartando as alterações.
+  :q                     Sair (bloqueia caso haja texto não salvo).
+  :ai                    Envia o contexto atual para a IA continuar ou responder.
+  :config                Abre o menu de configurações (pasta, tema, IA, chave).
+  :theme                 Abre o menu para mudar o esquema de cores e fundo.
+  :rename <nome>         Renomeia o arquivo ou define o título (ou :title <nome>).
+  :set key <chave>       Configura a sua Chave de API de IA (Gemini ou OpenAI).
+  :help                  Mostra a lista completa de comandos dentro do editor.
+
+[ Editor - Modo de Inserção ]
+  Esc                    Retornar para o Modo de Comando.
+  Ctrl + A               Selecionar todo o texto atual.
+  Ctrl + C               Copiar a seleção para a área de transferência interna.
+  Ctrl + K               Recortar a seleção atual.
+  Ctrl + V               Colar.
+  Shift + Setas          Selecionar texto.
+  Ctrl + Shift + ←/→     Selecionar a palavra inteira.
+  Shift + Home/End       Selecionar texto até o início/fim da linha.
+  Del / Backspace        Apagar o texto selecionado ou caractere.
+
+[ Navegador de Arquivos ] (getex get all)
+  j / k  ou ↑ / ↓        Navegar pela lista de arquivos.
+  Enter                  Abrir o arquivo selecionado no editor.
+  c                      Exibir/Ocultar o Calendário de filtro de datas à direita.
+  h / l  ou ← / →        Navegar entre os dias no Calendário para filtrar a lista.
+  r                      Usar IA para reorganizar magicamente o arquivo selecionado.
+  d                      Deletar o documento selecionado.
+  PgUp / PgDn            Rolar a janela de visualização prévia (Preview).
+  q  ou  Esc             Sair do navegador.
+"""
+    print(help_text)
+    sys.exit(0)
+
 def main():
+    args = sys.argv[1:]
+
+    if "--help" in args or "-h" in args:
+        show_help()
+
     cfg = load_config()
     if cfg is None:
         cfg = first_run_setup()
@@ -1060,8 +1954,6 @@ def main():
         os.path.expanduser(f"~/Desktop/{cfg['folder_name']}"),
         exist_ok=True
     )
-
-    args = sys.argv[1:]
 
     if args == ["get", "all"]:
         def _browse(stdscr):

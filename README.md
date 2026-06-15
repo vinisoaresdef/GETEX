@@ -62,7 +62,7 @@ Provedor de IA? (gemini/openai) [gemini]:
 Chave de API (gemini) [deixe em branco para depois]:
 ```
 
-As respostas ficam salvas em `~/.getex_config` (arquivo JSON editável). Você pode alterar qualquer configuração editando esse arquivo diretamente ou usando o comando `:set key` dentro do editor.
+As respostas ficam salvas em `~/.getex_config` (arquivo JSON editável). Você pode alterar qualquer configuração depois pelo menu `:config` dentro do editor, editando esse arquivo diretamente ou usando o comando `:set key`.
 
 ---
 
@@ -115,6 +115,8 @@ O getex tem dois modos, como o Vim.
 | `g` | Vai para a primeira linha |
 | `G` | Vai para a última linha |
 | `dd` | Apaga a linha atual |
+| `F2` | Marca/desmarca a linha atual em **verde** ● |
+| `F3` | Marca/desmarca a linha atual em **vermelho** ● |
 | `:` | Abre prompt de comandos |
 
 ### Modo Inserção
@@ -181,6 +183,49 @@ No modo comando, pressione `:` para abrir o prompt. Digite o comando e pressione
 | `:title Meu Titulo` | Mesmo que `:rename` |
 | `:ai` | Envia o texto para a IA e insere a resposta no buffer |
 | `:set key SUACHAVE` | Define a chave de API sem sair do editor |
+| `:config` | Abre o menu de configurações (pasta, tema, IA, chave) |
+| `:theme` | Abre o menu de troca de tema de cores |
+| `:help` | Mostra a lista completa de comandos dentro do editor |
+
+---
+
+## Marcação de linhas (F2 / F3)
+
+No modo comando você pode destacar linhas inteiras para revisão, sem alterar o texto:
+
+| Tecla | Ação |
+|-------|------|
+| `F2` | Marca a linha atual em **verde** (ou desmarca, se já estiver verde) |
+| `F3` | Marca a linha atual em **vermelho** (ou desmarca, se já estiver vermelha) |
+
+- As marcações **acompanham a linha** quando você insere, apaga, recorta ou cola texto acima delas — elas continuam grudadas ao conteúdo original.
+- Quando você apaga uma linha marcada (`dd`, junção de linhas, etc.), a marcação dela é removida junto.
+- As marcações são **persistidas** num arquivo paralelo `NOME_DO_DOC.txt.marks` (JSON) ao salvar, e reaparecem coloridas tanto no editor quanto no preview do navegador (`getex get all`).
+
+---
+
+## Temas
+
+O getex acompanha 5 temas de cores: `default`, `dark`, `light`, `hacker` e `ocean`.
+
+- Troque pelo menu com `:theme` (use `↑↓` para pré-visualizar ao vivo e `Enter` para aplicar).
+- Ou pelo menu de configurações com `:config`.
+- O tema escolhido fica salvo em `~/.getex_config` na chave `"theme"`.
+
+---
+
+## Configurações (`:config`)
+
+O comando `:config` abre um menu navegável para ajustar e salvar todas as configurações sem editar o JSON na mão:
+
+| Item | O que faz |
+|------|-----------|
+| Pasta dos documentos | Define a pasta em `~/Desktop/` onde os documentos são salvos (cria a pasta na hora) |
+| Tema de cores | Abre o seletor de temas com pré-visualização |
+| Provedor de IA | Alterna entre `gemini` e `openai` |
+| Chave de API | Define a chave de API (entrada mascarada) |
+
+Navegue com `↑↓`, pressione `Enter` para alterar o item e `Esc`/`q` para voltar. Tudo é gravado em `~/.getex_config`.
 
 ---
 
@@ -222,10 +267,15 @@ Abre um painel dividido: lista de arquivos à esquerda, preview à direita.
 |-------|------|
 | `↑` / `↓` ou `k` / `j` | Navegar entre arquivos |
 | `Enter` | Abrir o arquivo selecionado no editor |
+| `c` | Mostrar/ocultar o **calendário** de filtro por data |
+| `←` / `→` ou `h` / `l` | Trocar de dia (com o calendário ativo); dias com arquivos ficam destacados |
+| `r` | **Reorganizar o arquivo com IA** (reestrutura e sobrescreve o documento) |
 | `PgUp` / `PgDn` | Rolar o preview sem trocar de arquivo |
 | `Home` / `End` | Ir ao início / fim do preview |
 | `d` | Deletar o arquivo selecionado (pede confirmação `s/n`) |
 | `Esc` ou `q` | Sair do navegador |
+
+O preview à direita mostra as linhas marcadas com F2/F3 já coloridas.
 
 ---
 
@@ -262,9 +312,12 @@ nano ~/.getex_config
 {
   "folder_name": "MeusInsights",
   "ai_provider": "gemini",
-  "api_key": "AIzaSy..."
+  "api_key": "AIzaSy...",
+  "theme": "default"
 }
 ```
+
+> Dica: em vez de editar este arquivo na mão, use o comando `:config` dentro do editor — ele ajusta e salva todas essas opções por um menu.
 
 ---
 
