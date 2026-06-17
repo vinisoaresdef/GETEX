@@ -128,6 +128,23 @@ Optional cloud layer (degrades to local-only if absent). Lives in the
   DB access. Hardening (real Firebase Auth + rules, or a backend) is deferred to the
   workspace phase.
 
+### Cross-platform (macOS + Linux)
+
+Pure stdlib + `curses`, so it runs on macOS and Linux unchanged. Notes:
+
+- `~/Desktop` is used as the docs base on both (macOS keeps the real path `~/Desktop`
+  even when Finder shows a localized name).
+- macOS Terminal/iTerm often intercept `F2`/`F3` (need `Fn`), so command mode also
+  accepts **`2`/`3`** as aliases for the green/red marks. Keep both wired together.
+- `install.sh` is the cross-platform installer (detects OS, installs `firebase-admin`
+  trying `--user` then `--user --break-system-packages`, copies `getex.py` to
+  `/usr/local/bin/getex`, prepares `~/.getex/firebase`). Keep it bash 3.2-compatible
+  (macOS ships old bash): no associative arrays, no `${var^^}`.
+- **Sharing notes**: in the current single-workspace model, a second person sees the
+  owner's notes by using the same Firebase credential + logging in with the same
+  account (same `workspace_id`). Per-user membership of a shared workspace is the
+  future team phase.
+
 ## Conventions
 
 - Keep everything in the single `getex` file; don't split into modules.

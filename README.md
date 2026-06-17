@@ -4,15 +4,23 @@ Editor de texto modal para terminal Linux, inspirado no Vim. Salva documentos or
 
 ---
 
-## Instalação
+> Funciona em **Linux** e **macOS** (Intel e Apple Silicon). É Python puro com `curses` — sem framework.
+
+## Instalação rápida (recomendada) — Linux e macOS
+
+Baixe o repositório (ou só os arquivos `getex.py` e `install.sh`, lado a lado) e rode:
+
+```bash
+./install.sh
+```
+
+O instalador verifica o Python 3, instala o `firebase-admin` (para login/sincronização), copia o `getex` para `/usr/local/bin` e prepara a pasta da credencial. Depois é só rodar `getex`.
+
+## Instalação manual
 
 ### 1. Baixe o script
 
-Salve o arquivo `getex.py` em qualquer lugar da sua máquina. Por exemplo:
-
-```bash
-~/Downloads/getex.py
-```
+Salve o arquivo `getex.py` em qualquer lugar da sua máquina (ex.: `~/Downloads/getex.py`).
 
 ### 2. Instale como comando global
 
@@ -23,24 +31,32 @@ sudo chmod +x /usr/local/bin/getex
 
 Pronto. A partir daí você pode rodar `getex` de qualquer lugar no terminal.
 
+> **macOS:** `/usr/local/bin` já costuma estar no `PATH`. Se o comando não for encontrado depois, adicione ao seu `~/.zshrc`:
+> ```bash
+> echo 'export PATH="/usr/local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
+> ```
+
 ### 3. Verifique se funcionou
 
 ```bash
 getex --help 2>/dev/null || echo "getex instalado com sucesso"
 ```
 
-### Alternativa: alias no `.bashrc` / `.zshrc`
+### Alternativa: alias no `.zshrc` (macOS) / `.bashrc` (Linux)
 
 Se preferir não usar `sudo`:
 
 ```bash
-echo "alias getex='python3 ~/Downloads/getex.py'" >> ~/.bashrc
-source ~/.bashrc
+# macOS (zsh é o padrão)
+echo "alias getex='python3 ~/Downloads/getex.py'" >> ~/.zshrc && source ~/.zshrc
+
+# Linux (bash)
+echo "alias getex='python3 ~/Downloads/getex.py'" >> ~/.bashrc && source ~/.bashrc
 ```
 
 ### Dependências
 
-Para uso **local**, apenas Python 3 com a biblioteca padrão — nenhum `pip install` necessário. O módulo `curses` já vem incluso no Python do Linux.
+Para uso **local**, apenas Python 3 com a biblioteca padrão — nenhum `pip install` necessário. O módulo `curses` já vem incluso no Python do Linux e do macOS.
 
 ```bash
 python3 --version   # precisa ser 3.6 ou superior
@@ -49,10 +65,14 @@ python3 --version   # precisa ser 3.6 ou superior
 Para a **sincronização com o Firebase** (opcional), instale o SDK Admin:
 
 ```bash
-pip install --user --break-system-packages firebase-admin
+# Linux (e macOS com Homebrew Python)
+pip3 install --user --break-system-packages firebase-admin
+
+# Se a sua instalação aceitar sem a flag, este também serve:
+pip3 install --user firebase-admin
 ```
 
-> O `getex` funciona 100% offline sem essa dependência — ela só é necessária para login e sincronização na nuvem. A flag `--break-system-packages` é necessária em distros com ambiente Python "externally-managed" (Ubuntu 23.04+); a instalação `--user` vai para `~/.local` e não altera os pacotes do sistema.
+> O `getex` funciona 100% offline sem essa dependência — ela só é necessária para login e sincronização na nuvem. A flag `--break-system-packages` é exigida quando o Python é "externally-managed" (Ubuntu 23.04+ e Homebrew Python no macOS); a instalação `--user` vai para a sua pasta de usuário e não altera os pacotes do sistema. O `./install.sh` já tenta os dois automaticamente.
 
 ---
 
@@ -127,6 +147,25 @@ Cada usuário recebe um **workspace pessoal** automaticamente; toda nota carrega
 
 > ⚠️ **Segurança:** o *service account* ignora as regras do Firestore (acesso total). Por enquanto é adequado para uso individual do dono. Antes de distribuir o getex para uma equipe, a recomendação é migrar para autenticação Firebase real + regras de segurança (ou um backend intermediário).
 
+### Acessar as notas em outra máquina (ex.: um amigo no Mac)
+
+Hoje, cada usuário tem o seu próprio workspace. Para que outra pessoa veja **as suas** notas, ela usa a **mesma conta** que você (mesmo `workspace_id`). Passo a passo para o seu amigo:
+
+1. **Baixar** o `getex.py` e o `install.sh` (lado a lado) e rodar `./install.sh`.
+2. **Receber de você** o arquivo `service-account.json` (a credencial do projeto Firebase) e colocá-lo em:
+   ```bash
+   mkdir -p ~/.getex/firebase
+   mv ~/Downloads/service-account.json ~/.getex/firebase/service-account.json
+   chmod 600 ~/.getex/firebase/service-account.json
+   ```
+3. **Abrir** `getex` e, na tela de login, entrar com **o mesmo email e senha que você usa**.
+
+Pronto: ao entrar, o getex baixa as suas notas do Firestore e elas aparecem na Área de Trabalho dele. Edições feitas por ele sobem e você as vê após um `:sync`.
+
+> Antes de tudo, **você** precisa abrir o getex pelo menos uma vez logado e online, para que as suas notas locais subam para a nuvem (o `:sync` ou o salvamento já fazem isso).
+>
+> 🔒 Esse modelo compartilha a conta e a credencial — adequado entre pessoas de confiança. A separação por usuário (cada um com sua conta, acesso a um workspace compartilhado) é a próxima fase do projeto.
+
 ---
 
 ## Comandos disponíveis
@@ -178,9 +217,11 @@ O getex tem dois modos, como o Vim.
 | `g` | Vai para a primeira linha |
 | `G` | Vai para a última linha |
 | `dd` | Apaga a linha atual |
-| `F2` | Marca/desmarca a linha atual em **verde** ● |
-| `F3` | Marca/desmarca a linha atual em **vermelho** ● |
+| `F2` ou `2` | Marca/desmarca a linha atual em **verde** ● |
+| `F3` ou `3` | Marca/desmarca a linha atual em **vermelho** ● |
 | `:` | Abre prompt de comandos |
+
+> 💡 **No Mac**, as teclas de função (`F2`/`F3`) costumam exigir segurar `Fn`. Por isso o getex também aceita **`2`** (verde) e **`3`** (vermelho) no modo comando — funcionam em qualquer teclado.
 
 ### Modo Inserção
 
@@ -261,8 +302,8 @@ No modo comando você pode destacar linhas inteiras para revisão, sem alterar o
 
 | Tecla | Ação |
 |-------|------|
-| `F2` | Marca a linha atual em **verde** (ou desmarca, se já estiver verde) |
-| `F3` | Marca a linha atual em **vermelho** (ou desmarca, se já estiver vermelha) |
+| `F2` ou `2` | Marca a linha atual em **verde** (ou desmarca, se já estiver verde) |
+| `F3` ou `3` | Marca a linha atual em **vermelho** (ou desmarca, se já estiver vermelha) |
 
 - As marcações **acompanham a linha** quando você insere, apaga, recorta ou cola texto acima delas — elas continuam grudadas ao conteúdo original.
 - Quando você apaga uma linha marcada (`dd`, junção de linhas, etc.), a marcação dela é removida junto.

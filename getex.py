@@ -1133,7 +1133,7 @@ class GetexEditor:
             elif self.status:
                 disp_cmd = self.status
             else:
-                disp_cmd = "  'i' inserir | F2 ● | F3 ● | ':help' comandos | ':config' ajustes | ':' cmd"
+                disp_cmd = "  'i' inserir | F2/2 ● | F3/3 ● | ':help' | ':config' | ':sync' | ':' cmd"
             cpair = curses.color_pair(3) if self.status.startswith("[") else curses.color_pair(5)
         else:
             if self.has_sel():
@@ -1298,8 +1298,9 @@ class GetexEditor:
             "  ← ↑ → ↓         Mover cursor",
             "  g / G           Ir para a primeira / última linha",
             "  dd              Apagar a linha atual",
-            "  F2              Marcar/desmarcar a linha em verde ●",
-            "  F3              Marcar/desmarcar a linha em vermelho ●",
+            "  F2  ou  2       Marcar/desmarcar a linha em verde ●",
+            "  F3  ou  3       Marcar/desmarcar a linha em vermelho ●",
+            "                  (use 2/3 no Mac, onde F2/F3 pedem Fn)",
             "  :               Abrir a barra de comandos",
             "",
             "[ Barra de Comandos ( : ) ]",
@@ -1706,8 +1707,10 @@ class GetexEditor:
                             self.marks.pop(0, None)
                         self.col = 0
 
-                # ── F2: marca verde / desmarca ────────────────────────
-                elif k == curses.KEY_F2:
+                # ── F2 ou 2: marca verde / desmarca ───────────────────
+                # ("2"/"3" são alternativas ao F2/F3 — no Mac as teclas de
+                #  função muitas vezes exigem segurar Fn.)
+                elif k == curses.KEY_F2 or k == "2":
                     if self.marks.get(self.row) == "green":
                         del self.marks[self.row]          # desmarca
                         self.status = "  Marcação removida"
@@ -1715,8 +1718,8 @@ class GetexEditor:
                         self.marks[self.row] = "green"    # marca verde
                         self.status = "  ● Linha marcada em verde"
 
-                # ── F3: marca vermelho / desmarca ─────────────────────
-                elif k == curses.KEY_F3:
+                # ── F3 ou 3: marca vermelho / desmarca ────────────────
+                elif k == curses.KEY_F3 or k == "3":
                     if self.marks.get(self.row) == "red":
                         del self.marks[self.row]          # desmarca
                         self.status = "  Marcação removida"
@@ -2574,7 +2577,7 @@ e integração com Inteligência Artificial.
   Setas Direcionais      Navegar o cursor.
   g / G                  Ir para a primeira linha / última linha do arquivo.
   dd                     Apagar a linha atual inteira.
-  F2 / F3                Marcar a linha atual com bolinha Verde (F2) ou Vermelha (F3).
+  F2 / F3  (ou 2 / 3)    Marcar a linha atual com bolinha Verde (F2/2) ou Vermelha (F3/3).
   :                      Abrir barra de comandos (veja os comandos abaixo).
 
 [ Editor - Comandos da Barra ( : ) ]
