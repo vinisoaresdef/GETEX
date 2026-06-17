@@ -149,18 +149,29 @@ Optional cloud layer (degrades to local-only if absent). Lives in the
   trusted team now; real isolation needs Firebase Auth + security rules (or a backend)
   — a later hardening step.
 
-### Cross-platform (macOS + Linux)
+### Cross-platform (Linux + macOS + Windows)
 
-Pure stdlib + `curses`, so it runs on macOS and Linux unchanged. Notes:
+Pure stdlib + `curses`. Linux/macOS have `curses` natively; **Windows needs the
+`windows-curses` pip package** (PDCurses). The top-level `import curses` is wrapped to
+print a friendly install hint and exit on Windows if it's missing.
 
-- `~/Desktop` is used as the docs base on both (macOS keeps the real path `~/Desktop`
-  even when Finder shows a localized name).
-- macOS Terminal/iTerm often intercept `F2`/`F3` (need `Fn`), so command mode also
-  accepts **`2`/`3`** as aliases for the green/red marks. Keep both wired together.
-- `install.sh` is the cross-platform installer (detects OS, installs `firebase-admin`
-  trying `--user` then `--user --break-system-packages`, copies `getex.py` to
-  `/usr/local/bin/getex`, prepares `~/.getex/firebase`). Keep it bash 3.2-compatible
-  (macOS ships old bash): no associative arrays, no `${var^^}`.
+- **Desktop base**: `desktop_dir()` resolves the docs base across platforms — handles
+  the OneDrive-redirected Desktop on Windows (`~/OneDrive/Desktop`, `$OneDrive`) and
+  the localized `Área de Trabalho`. Everything goes through `active_folder()` →
+  `desktop_dir()`. Don't hardcode `~/Desktop` anymore.
+- **escdelay**: call `safe_set_escdelay()` (not `curses.set_escdelay` directly) —
+  windows-curses may not implement it.
+- **Colors**: `init_colors()` wraps `use_default_colors()` and each `init_pair` so the
+  `-1` (transparent) values degrade to white/black when PDCurses rejects them. New
+  pairs must go through the local `_pair()` helper.
+- macOS Terminal/iTerm (and Windows consoles) often intercept `F2`/`F3` (need `Fn`),
+  so command mode also accepts **`2`/`3`** as aliases for the green/red marks. Keep
+  both wired together.
+- **Installers**: `install.sh` (Linux/macOS, bash 3.2-compatible — no associative
+  arrays/`${var^^}`) and `install.ps1` (Windows/PowerShell — installs
+  `windows-curses`+`firebase-admin`, copies `getex.py` to `%LOCALAPPDATA%\getex`,
+  writes a `getex.bat` shim, adds it to the user PATH). Keep both in sync with the
+  install docs in `README.md`.
 - **Sharing notes**: the workspace **admin adds each teammate** (`:account` → add
   user), setting their initial email/password. The teammate logs in with workspace +
   email + password and sees that workspace's notes. They still need the

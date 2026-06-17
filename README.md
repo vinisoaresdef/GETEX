@@ -4,17 +4,25 @@ Editor de texto modal para terminal Linux, inspirado no Vim. Salva documentos or
 
 ---
 
-> Funciona em **Linux** e **macOS** (Intel e Apple Silicon). É Python puro com `curses` — sem framework.
+> Funciona em **Linux**, **macOS** (Intel e Apple Silicon) e **Windows** (10/11). É Python puro com `curses` — sem framework.
 
-## Instalação rápida (recomendada) — Linux e macOS
+## Instalação rápida (recomendada)
 
-Baixe o repositório (ou só os arquivos `getex.py` e `install.sh`, lado a lado) e rode:
+Baixe o repositório (ou os arquivos `getex.py` + o instalador, lado a lado).
+
+### Linux e macOS
 
 ```bash
 ./install.sh
 ```
 
-O instalador verifica o Python 3, instala o `firebase-admin` (para login/sincronização), copia o `getex` para `/usr/local/bin` e prepara a pasta da credencial. Depois é só rodar `getex`.
+### Windows (PowerShell)
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+Os instaladores verificam o Python 3, instalam as dependências (no Windows também o `windows-curses`), instalam o comando `getex` e preparam a pasta da credencial. Depois é só abrir um **novo** terminal e rodar `getex`.
 
 ## Instalação manual
 
@@ -36,6 +44,13 @@ Pronto. A partir daí você pode rodar `getex` de qualquer lugar no terminal.
 > echo 'export PATH="/usr/local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 > ```
 
+> **Windows:** não há `/usr/local/bin`. Use o `install.ps1` (recomendado) ou, manualmente, deixe o `getex.py` numa pasta e rode `python getex.py`. Para ter o comando `getex`, crie um `getex.bat` na mesma pasta com o conteúdo:
+> ```bat
+> @echo off
+> python "%~dp0getex.py" %*
+> ```
+> e adicione essa pasta ao `PATH` do usuário. **É obrigatório** instalar o `windows-curses` (veja Dependências). Rode num terminal real: **Windows Terminal**, PowerShell ou `cmd` (não funciona dentro do output de uma IDE).
+
 ### 3. Verifique se funcionou
 
 ```bash
@@ -56,10 +71,16 @@ echo "alias getex='python3 ~/Downloads/getex.py'" >> ~/.bashrc && source ~/.bash
 
 ### Dependências
 
-Para uso **local**, apenas Python 3 com a biblioteca padrão — nenhum `pip install` necessário. O módulo `curses` já vem incluso no Python do Linux e do macOS.
+**Linux/macOS:** para uso local, apenas Python 3 com a biblioteca padrão — o módulo `curses` já vem incluso.
 
 ```bash
 python3 --version   # precisa ser 3.6 ou superior
+```
+
+**Windows:** o `curses` **não** vem no Python — instale o pacote `windows-curses` (mesmo para uso só local):
+
+```powershell
+pip install --user windows-curses
 ```
 
 Para a **sincronização com o Firebase** (opcional), instale o SDK Admin:
@@ -70,6 +91,11 @@ pip3 install --user --break-system-packages firebase-admin
 
 # Se a sua instalação aceitar sem a flag, este também serve:
 pip3 install --user firebase-admin
+```
+
+```powershell
+# Windows
+pip install --user firebase-admin
 ```
 
 > O `getex` funciona 100% offline sem essa dependência — ela só é necessária para login e sincronização na nuvem. A flag `--break-system-packages` é exigida quando o Python é "externally-managed" (Ubuntu 23.04+ e Homebrew Python no macOS); a instalação `--user` vai para a sua pasta de usuário e não altera os pacotes do sistema. O `./install.sh` já tenta os dois automaticamente.
@@ -482,13 +508,16 @@ echo $ESCDELAY   # se retornar um valor alto, remova do seu .bashrc/.zshrc
 **`Ctrl + Shift + seta` não funciona**
 Depende do emulador de terminal enviar as sequências corretas. Funciona no GNOME Terminal, Tilix, Konsole e Alacritty. O `Shift + seta` simples sempre funciona como alternativa.
 
-**Pasta Desktop não existe**
-Algumas distribuições usam nomes diferentes para a Área de Trabalho:
-```bash
-# Ubuntu/Debian em português
-ls ~/Desktop || ls ~/Área\ de\ trabalho
+**Windows: `ModuleNotFoundError: No module named '_curses'` (ou 'curses')**
+Falta o pacote `windows-curses`:
+```powershell
+pip install --user windows-curses
+```
+Rode o getex num terminal real (Windows Terminal, PowerShell ou `cmd`) — não dentro do painel de output de uma IDE.
 
-# Se necessário, crie um symlink
+**Pasta Desktop / Área de Trabalho**
+O getex localiza a Área de Trabalho automaticamente, inclusive quando ela é redirecionada pelo **OneDrive** no Windows (`~/OneDrive/Desktop`) ou tem nome em português no Linux (`~/Área de trabalho`). Se mesmo assim não achar, ele cria `~/Desktop`. No Linux você pode forçar com um symlink:
+```bash
 ln -s ~/Área\ de\ trabalho ~/Desktop
 ```
 
