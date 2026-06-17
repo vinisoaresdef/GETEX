@@ -133,8 +133,14 @@ Optional cloud layer (degrades to local-only if absent). Lives in the
   (last-write-wins by `updated_at`). Saving marks dirty (`mark_note_dirty`) and
   best-effort pushes (`push_note_if_online`). Offline deletes are queued as
   tombstones in `~/.getex/sync/tombstones.json`.
-- Editor commands: `:sync`, `:whoami`, `:logout`. Browser: `s` to sync. Switch
-  workspace = `:logout` then log into another one.
+- **Account/member management** (`AccountMenu`, curses): `:account` opens it,
+  `:passwd` jumps straight to password change. Trocar senha verifies the old password
+  and updates `workspaces/{WID}/users/{uid}` + the local session. The workspace
+  **creator** (`workspaces/{WID}.created_by`) is the admin and can list/remove members
+  (`fb_list_members`/`fb_remove_member`); can't remove self or the creator. There is
+  no password *reset* (forgot-password) flow — only authenticated change.
+- Editor commands: `:sync`, `:whoami`, `:logout`, `:account`, `:passwd`. Browser: `s`
+  to sync. Switch workspace = `:logout` then log into another one.
 - **Security caveat**: the service account bypasses Firestore rules (full access), so
   workspace isolation is enforced at the app layer, not by the DB. Adequate for a
   trusted team now; real isolation needs Firebase Auth + security rules (or a backend)

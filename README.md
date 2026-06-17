@@ -150,9 +150,19 @@ Ao abrir o `getex` com o Firebase configurado, aparece a **tela de login**:
 | Onde | Comando | Ação |
 |------|---------|------|
 | Editor | `:sync` | Sincroniza agora com o Firebase |
-| Editor | `:whoami` | Mostra o usuário logado e o status (online/offline) |
+| Editor | `:whoami` | Mostra o usuário/workspace e o status (online/offline) |
+| Editor | `:account` | Conta: trocar senha, ver/remover membros do workspace |
+| Editor | `:passwd` | Troca a sua senha |
 | Editor | `:logout` | Encerra a sessão |
 | Navegador | `s` | Sincroniza a lista com o Firebase |
+
+### Conta e membros do workspace (`:account`)
+
+- **Trocar senha** (`:passwd` ou pelo menu `:account`): pede a senha atual e a nova. Atualiza no Firebase e na sessão local.
+- **Ver membros**: lista quem tem conta no workspace atual.
+- **Remover membro**: disponível para o **criador do workspace** (admin). Você escolhe o membro e confirma; ele perde o acesso (a conta dele naquele workspace é apagada). Não é possível remover você mesmo nem o criador. As notas permanecem no workspace.
+
+> Não há recuperação de senha esquecida — apenas troca autenticada. Se um membro esquecer a senha, o admin pode removê-lo e ele se cadastra de novo com a chave do workspace.
 
 > ⚠️ **Segurança:** o *service account* ignora as regras do Firestore (acesso total), então o isolamento entre workspaces é garantido pela aplicação, não pelo banco. É adequado para uma equipe de confiança. O isolamento garantido pelo próprio banco (autenticação Firebase real + regras de segurança, ou um backend) é um endurecimento futuro.
 
