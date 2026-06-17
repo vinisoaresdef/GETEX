@@ -92,6 +92,59 @@ If you add any new code path that mutates `self.lines` length, you **must** call
 appropriate helper or marks will desync. Marks are persisted next to the document in
 a parallel `<file>.txt.marks` JSON file (`load_marks` / `save_marks`).
 
+### Firebase / sync / auth
+
+Optional cloud layer (degrades to local-only if absent). Lives in the
+`# FIREBASE` section of `getex`.
+
+- **Dependency**: `firebase-admin` (Admin SDK). Imported lazily inside `fb_init()`
+  only when a credential is found, so local-only startup stays fast. Installed with
+  `pip install --user --break-system-packages firebase-admin` (PEP 668 environment).
+- **Credential**: service-account JSON, discovered by `find_credential()` from
+  `$GETEX_FIREBASE_CRED`, `~/.getex/firebase/service-account.json`, or a `firebase/`
+  dir next to the script. **Never commit it** (see `.gitignore`).
+- **Global state**: `_fb_state` dict (db, user, online, reason) with accessors
+  `fb_db()`, `fb_user()`, `fb_is_online()`, `fb_is_real_user()`, `fb_status_tag()`.
+  This avoids threading db/user through every curses constructor.
+- **Auth**: app-level, not Firebase Auth (only a service account is available, no Web
+  API key). Users live in Firestore `users/{uid}` with PBKDF2-SHA256 salted hashes
+  (`hash_password`/`verify_password`). `LoginScreen` (curses) does login/register;
+  session cached in `~/.getex/session.json` (chmod 600) for auto-resume and offline
+  login. `main()` auto-resumes a saved session, else shows login, else (no Firebase)
+  runs as `LOCAL_GUEST`.
+- **Sync model**: notes stay as `.txt` files; each gets a sidecar
+  `<file>.txt.sync.json` = `{id, workspace_id, owner_uid, updated_at, dirty, deleted}`.
+  `sync_notes()` pushes dirty notes then pulls the workspace's notes
+  (last-write-wins by `updated_at`). Saving marks dirty (`mark_note_dirty`) and
+  best-effort pushes (`push_note_if_online`). Offline deletes are queued as
+  tombstones in `~/.getex/sync/tombstones.json`. Firestore collections: `users`,
+  `workspaces`, `notes`.
+- **Workspaces**: each user gets a personal `workspace_id` at signup; notes carry it.
+  Team workspaces are a planned future phase — the data model already supports them
+  (`workspaces/{wid}` with `members`), but no multi-workspace UI exists yet.
+- Editor commands: `:sync`, `:whoami`, `:logout`. Browser: `s` to sync.
+- **Security caveat**: the service account bypasses Firestore rules (full access).
+  Fine for the single owner now; distributing it to a team would give everyone full
+  DB access. Hardening (real Firebase Auth + rules, or a backend) is deferred to the
+  workspace phase.
+
+### Cross-platform (macOS + Linux)
+
+Pure stdlib + `curses`, so it runs on macOS and Linux unchanged. Notes:
+
+- `~/Desktop` is used as the docs base on both (macOS keeps the real path `~/Desktop`
+  even when Finder shows a localized name).
+- macOS Terminal/iTerm often intercept `F2`/`F3` (need `Fn`), so command mode also
+  accepts **`2`/`3`** as aliases for the green/red marks. Keep both wired together.
+- `install.sh` is the cross-platform installer (detects OS, installs `firebase-admin`
+  trying `--user` then `--user --break-system-packages`, copies `getex.py` to
+  `/usr/local/bin/getex`, prepares `~/.getex/firebase`). Keep it bash 3.2-compatible
+  (macOS ships old bash): no associative arrays, no `${var^^}`.
+- **Sharing notes**: in the current single-workspace model, a second person sees the
+  owner's notes by using the same Firebase credential + logging in with the same
+  account (same `workspace_id`). Per-user membership of a shared workspace is the
+  future team phase.
+
 ## Conventions
 
 - Keep everything in the single `getex` file; don't split into modules.

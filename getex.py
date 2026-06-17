@@ -23,6 +23,11 @@ import curses
 import os
 import sys
 import json
+import time
+import uuid
+import socket
+import hashlib
+import secrets
 import datetime
 import calendar
 
@@ -30,6 +35,20 @@ import calendar
 CONFIG_FILE = os.path.expanduser("~/.getex_config")
 ESC_KEY     = 27
 MAX_FILE_SIZE = 1024 * 1024  # 1 MB - limite para carregar arquivo inteiro
+
+# ─── Firebase / paths ────────────────────────────────────────────────────────
+GETEX_HOME     = os.path.expanduser("~/.getex")
+FB_CRED_DIR    = os.path.join(GETEX_HOME, "firebase")
+SESSION_FILE   = os.path.join(GETEX_HOME, "session.json")
+SYNC_DIR       = os.path.join(GETEX_HOME, "sync")
+TOMBSTONE_FILE = os.path.join(SYNC_DIR, "tombstones.json")
+
+# Usuário "convidado" usado quando o Firebase não está configurado:
+# mantém o getex 100% funcional em modo local, sem exigir login.
+LOCAL_GUEST = {
+    "uid": "local", "email": "local", "name": "local",
+    "workspace_id": "local", "salt": "", "password_hash": "",
+}
 
 DEFAULT_CONFIG = {
     "folder_name": "GetexDocs",
@@ -418,6 +437,431 @@ def save_marks(filepath, marks):
         pass
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# FIREBASE  —  autenticação simples + sincronização offline/online
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Arquitetura (mantida deliberadamente simples para um app de terminal):
+#
+#  • As notas continuam sendo arquivos .txt em ~/Desktop/<pasta>/ (fonte local).
+#  • Cada nota ganha um "sidecar" <arquivo>.txt.sync.json com os metadados de
+#    sincronização: {id, workspace_id, owner_uid, updated_at, dirty, deleted}.
+#  • Online  → empurra notas "dirty" e puxa as do workspace do usuário (Firestore).
+#  • Offline → tudo funciona local; mudanças ficam "dirty" e sobem no próximo sync.
+#  • Resolução de conflito: last-write-wins por updated_at (epoch).
+#  • Login: coleção Firestore "users" (email + hash PBKDF2). O Admin SDK lê/grava.
+#
+# Coleções no Firestore:
+#   users/{uid}        → {email, name, salt, password_hash, personal_workspace, ...}
+#   workspaces/{wid}   → {name, owner_uid, members:[uid], personal, created_at}
+#   notes/{noteid}     → {filename, title, content, marks, workspace_id, owner_uid,
+#                         updated_at, deleted}
+#
+# Estado global do Firebase (evita passar db/user por todos os construtores).
+_fb_state = {"db": None, "user": None, "reason": "", "online": False}
+
+def fb_db():        return _fb_state["db"]
+def fb_user():      return _fb_state["user"]
+def fb_reason():    return _fb_state["reason"]
+def fb_is_online(): return bool(_fb_state["online"] and _fb_state["db"] is not None)
+
+def fb_is_real_user():
+    """True se há um usuário Firebase logado (não o convidado local)."""
+    u = _fb_state["user"]
+    return bool(u and u.get("uid") and u.get("uid") != "local")
+
+# ─── Localização da credencial (service account) ────────────────────────────
+def find_credential():
+    """Procura o JSON do service account em vários locais conhecidos."""
+    env = os.environ.get("GETEX_FIREBASE_CRED")
+    if env and os.path.exists(os.path.expanduser(env)):
+        return os.path.expanduser(env)
+    candidates = []
+    if os.path.isdir(FB_CRED_DIR):
+        preferred = os.path.join(FB_CRED_DIR, "service-account.json")
+        if os.path.exists(preferred):
+            return preferred
+        candidates += [os.path.join(FB_CRED_DIR, f)
+                       for f in sorted(os.listdir(FB_CRED_DIR)) if f.endswith(".json")]
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        local_dir = os.path.join(here, "firebase")
+        if os.path.isdir(local_dir):
+            candidates += [os.path.join(local_dir, f)
+                           for f in sorted(os.listdir(local_dir)) if f.endswith(".json")]
+    except Exception:
+        pass
+    return candidates[0] if candidates else None
+
+def fb_init():
+    """Inicializa o Firebase Admin SDK + cliente Firestore. Retorna db ou None.
+
+    Importa firebase_admin de forma preguiçosa: se não houver credencial, nem
+    sequer tentamos importar (mantém a inicialização rápida em modo local)."""
+    cred_path = find_credential()
+    if not cred_path:
+        _fb_state["reason"] = "Sem credencial Firebase — modo local"
+        return None
+    try:
+        import firebase_admin
+        from firebase_admin import credentials, firestore
+    except Exception:
+        _fb_state["reason"] = "firebase-admin não instalado — modo local"
+        return None
+    try:
+        if not firebase_admin._apps:
+            firebase_admin.initialize_app(credentials.Certificate(cred_path))
+        _fb_state["db"] = firestore.client()
+        return _fb_state["db"]
+    except Exception as e:
+        _fb_state["reason"] = f"Falha ao iniciar Firebase: {e}"
+        return None
+
+def check_online():
+    """Checagem rápida de conectividade (socket TCP até o Firestore)."""
+    if _fb_state["db"] is None:
+        _fb_state["online"] = False
+        return False
+    try:
+        s = socket.create_connection(("firestore.googleapis.com", 443), timeout=3)
+        s.close()
+        _fb_state["online"] = True
+    except Exception:
+        _fb_state["online"] = False
+    return _fb_state["online"]
+
+def _friendly_fb_error(e):
+    msg = str(e)
+    if "SERVICE_DISABLED" in msg or "has not been used" in msg:
+        return "Firestore não habilitado no projeto. Ative no console do Firebase."
+    if "PERMISSION_DENIED" in msg:
+        return "Permissão negada no Firestore (verifique a credencial)."
+    return f"Erro Firestore: {msg[:60]}"
+
+def _where(coll, field, op, value):
+    """Filtro de consulta compatível com versões novas e antigas do SDK."""
+    try:
+        from google.cloud.firestore_v1.base_query import FieldFilter
+        return coll.where(filter=FieldFilter(field, op, value))
+    except Exception:
+        return coll.where(field, op, value)
+
+# ─── Senhas (PBKDF2-HMAC-SHA256) ─────────────────────────────────────────────
+def hash_password(password, salt=None):
+    if salt is None:
+        salt = secrets.token_hex(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"),
+                             bytes.fromhex(salt), 100_000)
+    return salt, dk.hex()
+
+def verify_password(password, salt, expected_hash):
+    if not salt or not expected_hash:
+        return False
+    _, h = hash_password(password, salt)
+    return secrets.compare_digest(h, expected_hash)
+
+# ─── Usuários / autenticação ─────────────────────────────────────────────────
+def fb_find_user(db, email):
+    email = email.strip().lower()
+    for d in _where(db.collection("users"), "email", "==", email).limit(1).stream():
+        u = d.to_dict()
+        u["uid"] = d.id
+        return u
+    return None
+
+def _session_from(u):
+    return {
+        "uid": u["uid"], "email": u["email"], "name": u.get("name", ""),
+        "workspace_id": u.get("personal_workspace") or u.get("workspace_id"),
+        "salt": u.get("salt", ""), "password_hash": u.get("password_hash", ""),
+    }
+
+def fb_create_user(db, email, password, name=""):
+    email = email.strip().lower()
+    try:
+        if fb_find_user(db, email):
+            return None, "Email já cadastrado"
+        salt, h = hash_password(password)
+        uid = uuid.uuid4().hex
+        wid = "ws_" + uuid.uuid4().hex
+        nm  = name.strip() or email.split("@")[0]
+        now = time.time()
+        db.collection("users").document(uid).set({
+            "email": email, "name": nm, "salt": salt, "password_hash": h,
+            "personal_workspace": wid, "created_at": now,
+        })
+        db.collection("workspaces").document(wid).set({
+            "name": f"{nm} (pessoal)", "owner_uid": uid, "members": [uid],
+            "personal": True, "created_at": now,
+        })
+        return _session_from({"uid": uid, "email": email, "name": nm,
+                              "personal_workspace": wid, "salt": salt,
+                              "password_hash": h}), None
+    except Exception as e:
+        return None, _friendly_fb_error(e)
+
+def fb_login(db, email, password):
+    try:
+        u = fb_find_user(db, email)
+    except Exception as e:
+        return None, _friendly_fb_error(e)
+    if not u:
+        return None, "Usuário não encontrado"
+    if not verify_password(password, u.get("salt", ""), u.get("password_hash", "")):
+        return None, "Senha incorreta"
+    return _session_from(u), None
+
+def offline_login(email, password):
+    s = load_session()
+    if not s:
+        return None, "Sem sessão local — conecte-se para o 1º login."
+    if s.get("email", "").lower() != email.strip().lower():
+        return None, "Offline: apenas o último usuário pode entrar."
+    if not verify_password(password, s.get("salt", ""), s.get("password_hash", "")):
+        return None, "Senha incorreta"
+    return s, None
+
+# ─── Sessão local ────────────────────────────────────────────────────────────
+def save_session(user):
+    try:
+        os.makedirs(GETEX_HOME, exist_ok=True)
+        with open(SESSION_FILE, "w") as f:
+            json.dump(user, f)
+        os.chmod(SESSION_FILE, 0o600)
+    except Exception:
+        pass
+
+def load_session():
+    try:
+        with open(SESSION_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+def clear_session():
+    try:
+        if os.path.exists(SESSION_FILE):
+            os.remove(SESSION_FILE)
+    except Exception:
+        pass
+
+# ─── Sidecars de sincronização ───────────────────────────────────────────────
+def sidecar_path(filepath):
+    return filepath + ".sync.json"
+
+def load_sidecar(filepath):
+    try:
+        with open(sidecar_path(filepath)) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+def save_sidecar(filepath, meta):
+    try:
+        with open(sidecar_path(filepath), "w") as f:
+            json.dump(meta, f)
+    except Exception:
+        pass
+
+def ensure_sidecar(filepath, workspace_id, owner_uid):
+    """Garante metadados de sync (migra notas locais antigas marcando-as dirty)."""
+    meta = load_sidecar(filepath)
+    if meta is None:
+        try:
+            mtime = os.path.getmtime(filepath)
+        except Exception:
+            mtime = time.time()
+        meta = {"id": uuid.uuid4().hex, "workspace_id": workspace_id,
+                "owner_uid": owner_uid, "updated_at": mtime,
+                "dirty": True, "deleted": False}
+        save_sidecar(filepath, meta)
+    return meta
+
+def mark_note_dirty(filepath):
+    """Chamado ao salvar: marca a nota para subir no próximo sync."""
+    if not fb_is_real_user() or not filepath:
+        return None  # modo local puro: não cria sidecar
+    user = fb_user()
+    meta = load_sidecar(filepath) or {
+        "id": uuid.uuid4().hex, "workspace_id": user["workspace_id"],
+        "owner_uid": user["uid"], "deleted": False,
+    }
+    meta.setdefault("workspace_id", user["workspace_id"])
+    meta.setdefault("owner_uid", user["uid"])
+    meta["updated_at"] = time.time()
+    meta["dirty"] = True
+    save_sidecar(filepath, meta)
+    return meta
+
+# ─── Empurrar / puxar / sincronizar ──────────────────────────────────────────
+def fb_push_note(db, filepath):
+    meta = load_sidecar(filepath)
+    if not meta:
+        return False
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+    except Exception:
+        return False
+    marks = load_marks(filepath)
+    db.collection("notes").document(meta["id"]).set({
+        "filename":     os.path.basename(filepath),
+        "title":        os.path.basename(filepath),
+        "content":      content,
+        "marks":        {str(k): v for k, v in marks.items()},
+        "workspace_id": meta["workspace_id"],
+        "owner_uid":    meta["owner_uid"],
+        "updated_at":   meta["updated_at"],
+        "deleted":      meta.get("deleted", False),
+    })
+    meta["dirty"] = False
+    save_sidecar(filepath, meta)
+    return True
+
+def _norm_ts(v):
+    """Converte timestamp do Firestore (ou epoch) em float comparável."""
+    if hasattr(v, "timestamp"):
+        try:
+            return v.timestamp()
+        except Exception:
+            return 0.0
+    try:
+        return float(v)
+    except Exception:
+        return 0.0
+
+def _write_remote_to_local(fp, data, nid, wid):
+    with open(fp, "w", encoding="utf-8") as f:
+        f.write(data.get("content", ""))
+    marks = {}
+    for k, v in (data.get("marks") or {}).items():
+        try:
+            marks[int(k)] = v
+        except Exception:
+            pass
+    save_marks(fp, marks)
+    save_sidecar(fp, {"id": nid, "workspace_id": wid,
+                      "owner_uid": data.get("owner_uid", ""),
+                      "updated_at": _norm_ts(data.get("updated_at", 0)),
+                      "dirty": False, "deleted": False})
+
+def _delete_local(fp):
+    for p in (fp, marks_path(fp), sidecar_path(fp)):
+        try:
+            if os.path.exists(p):
+                os.remove(p)
+        except Exception:
+            pass
+
+def fb_pull_notes(db, user, folder):
+    wid = user.get("workspace_id")
+    if not wid:
+        return 0
+    local_by_id = {}
+    for fn in os.listdir(folder):
+        if fn.endswith(".txt"):
+            fp = os.path.join(folder, fn)
+            m = load_sidecar(fp)
+            if m and m.get("id"):
+                local_by_id[m["id"]] = (fp, m)
+    pulled = 0
+    for d in _where(db.collection("notes"), "workspace_id", "==", wid).stream():
+        data = d.to_dict()
+        nid  = d.id
+        if data.get("deleted"):
+            if nid in local_by_id:
+                _delete_local(local_by_id[nid][0])
+            continue
+        remote_ts = _norm_ts(data.get("updated_at", 0))
+        if nid in local_by_id:
+            fp, m = local_by_id[nid]
+            if m.get("dirty"):
+                continue  # mudança local pendente → resolvida no push
+            if remote_ts > m.get("updated_at", 0):
+                _write_remote_to_local(fp, data, nid, wid)
+                pulled += 1
+        else:
+            fname = data.get("filename") or f"DOC_remote_{nid[:8]}.txt"
+            fp = os.path.join(folder, fname)
+            if os.path.exists(fp):
+                fp = os.path.join(folder, f"{nid[:8]}_{fname}")
+            _write_remote_to_local(fp, data, nid, wid)
+            pulled += 1
+    return pulled
+
+# ─── Tombstones (exclusões feitas offline) ───────────────────────────────────
+def load_tombstones():
+    try:
+        with open(TOMBSTONE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def add_tombstone(note_id, workspace_id):
+    os.makedirs(SYNC_DIR, exist_ok=True)
+    t = load_tombstones()
+    t[note_id] = workspace_id
+    try:
+        with open(TOMBSTONE_FILE, "w") as f:
+            json.dump(t, f)
+    except Exception:
+        pass
+
+def flush_tombstones(db):
+    t = load_tombstones()
+    if not t:
+        return
+    for nid in list(t.keys()):
+        try:
+            db.collection("notes").document(nid).set(
+                {"deleted": True, "updated_at": time.time()}, merge=True)
+            del t[nid]
+        except Exception:
+            pass
+    try:
+        with open(TOMBSTONE_FILE, "w") as f:
+            json.dump(t, f)
+    except Exception:
+        pass
+
+def sync_notes(folder):
+    """Sincroniza a pasta com o Firestore. Retorna (enviadas, recebidas, status)."""
+    db, user = fb_db(), fb_user()
+    if db is None or not fb_is_real_user():
+        return (0, 0, "offline")
+    if not check_online():
+        return (0, 0, "offline")
+    pushed = 0
+    try:
+        flush_tombstones(db)
+        for fn in os.listdir(folder):
+            if fn.endswith(".txt"):
+                fp = os.path.join(folder, fn)
+                meta = ensure_sidecar(fp, user["workspace_id"], user["uid"])
+                if meta.get("dirty"):
+                    if fb_push_note(db, fp):
+                        pushed += 1
+        pulled = fb_pull_notes(db, user, folder)
+        return (pushed, pulled, "ok")
+    except Exception as e:
+        return (pushed, 0, _friendly_fb_error(e))
+
+def push_note_if_online(filepath):
+    """Best-effort: empurra uma nota logo após salvar, se online."""
+    if not fb_is_real_user() or not fb_is_online():
+        return
+    try:
+        fb_push_note(fb_db(), filepath)
+    except Exception:
+        pass  # fica dirty, sobe no próximo :sync
+
+def fb_status_tag():
+    """Indicador curto de usuário/conexão para as barras de status."""
+    if not fb_is_real_user():
+        return ""
+    dot = "●" if fb_is_online() else "○"
+    return f"{dot} {fb_user().get('email','')}"
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # EDITOR
 # ═══════════════════════════════════════════════════════════════════════════════
 class GetexEditor:
@@ -672,7 +1116,9 @@ class GetexEditor:
         label = f" {self.mode} "
         pair  = curses.color_pair(1) if self.mode == self.MODE_INS else curses.color_pair(2)
         info  = f"  Ln {self.row+1}, Col {self.col+1}  |  {len(self.lines)} linhas{sel_info}"
-        rtag  = f"  {self.title}  " if self.title else "  getex  "
+        base  = self.title if self.title else "getex"
+        utag  = fb_status_tag()
+        rtag  = f"  {base} · {utag}  " if utag else f"  {base}  "
         pad   = w - len(label) - len(info) - len(rtag)
         sline = label + info + " " * max(0, pad) + rtag
         try:
@@ -687,7 +1133,7 @@ class GetexEditor:
             elif self.status:
                 disp_cmd = self.status
             else:
-                disp_cmd = "  'i' inserir | F2 ● | F3 ● | ':help' comandos | ':config' ajustes | ':' cmd"
+                disp_cmd = "  'i' inserir | F2/2 ● | F3/3 ● | ':help' | ':config' | ':sync' | ':' cmd"
             cpair = curses.color_pair(3) if self.status.startswith("[") else curses.color_pair(5)
         else:
             if self.has_sel():
@@ -752,7 +1198,36 @@ class GetexEditor:
                 path = save_document(self.lines, self.cfg, title=self.title or None)
                 self.source_file = path  # registra para salvar marks
             save_marks(self.source_file, self.marks)
-            return "QUIT", f"✓ Salvo em {path}"
+            mark_note_dirty(self.source_file)
+            push_note_if_online(self.source_file)
+            tag = "  ☁" if fb_is_online() else ""
+            return "QUIT", f"✓ Salvo em {path}{tag}"
+        if cmd in ("sync", "s"):
+            folder = os.path.expanduser(f"~/Desktop/{self.cfg.get('folder_name','GetexDocs')}")
+            if not fb_is_real_user():
+                self.status = "[!] Sem login Firebase — modo local"
+                return "STAY", None
+            self.status = "  ⏳ Sincronizando..."
+            self.render()
+            pushed, pulled, st = sync_notes(folder)
+            if st == "offline":
+                self.status = "[!] Offline — nada sincronizado"
+            elif st == "ok":
+                self.status = f"✓ Sincronizado: {pushed}↑ {pulled}↓"
+            else:
+                self.status = f"[!] {st}"
+            return "STAY", None
+        if cmd == "logout":
+            clear_session()
+            return "QUIT", "✓ Sessão encerrada. Reabra o getex para entrar."
+        if cmd in ("whoami", "me"):
+            if fb_is_real_user():
+                u = fb_user()
+                net = "online" if fb_is_online() else "offline"
+                self.status = f"  {u.get('email')} · {net} · ws={u.get('workspace_id','')[:10]}"
+            else:
+                self.status = "  modo local (sem login Firebase)"
+            return "STAY", None
         if cmd == "q!":
             return "QUIT", ""
         if cmd == "q":
@@ -823,8 +1298,9 @@ class GetexEditor:
             "  ← ↑ → ↓         Mover cursor",
             "  g / G           Ir para a primeira / última linha",
             "  dd              Apagar a linha atual",
-            "  F2              Marcar/desmarcar a linha em verde ●",
-            "  F3              Marcar/desmarcar a linha em vermelho ●",
+            "  F2  ou  2       Marcar/desmarcar a linha em verde ●",
+            "  F3  ou  3       Marcar/desmarcar a linha em vermelho ●",
+            "                  (use 2/3 no Mac, onde F2/F3 pedem Fn)",
             "  :               Abrir a barra de comandos",
             "",
             "[ Barra de Comandos ( : ) ]",
@@ -837,6 +1313,9 @@ class GetexEditor:
             "  :rename <nome>  Renomear o arquivo / definir título",
             "  :title <nome>   (igual a :rename)",
             "  :set key <ch>   Definir a chave de API de IA",
+            "  :sync           Sincronizar as notas com o Firebase",
+            "  :whoami         Mostrar usuário logado e status de conexão",
+            "  :logout         Encerrar a sessão (pede login na próxima vez)",
             "  :help           Mostrar esta tela de ajuda",
             "",
             "[ Modo de Inserção ]",
@@ -1228,8 +1707,10 @@ class GetexEditor:
                             self.marks.pop(0, None)
                         self.col = 0
 
-                # ── F2: marca verde / desmarca ────────────────────────
-                elif k == curses.KEY_F2:
+                # ── F2 ou 2: marca verde / desmarca ───────────────────
+                # ("2"/"3" são alternativas ao F2/F3 — no Mac as teclas de
+                #  função muitas vezes exigem segurar Fn.)
+                elif k == curses.KEY_F2 or k == "2":
                     if self.marks.get(self.row) == "green":
                         del self.marks[self.row]          # desmarca
                         self.status = "  Marcação removida"
@@ -1237,8 +1718,8 @@ class GetexEditor:
                         self.marks[self.row] = "green"    # marca verde
                         self.status = "  ● Linha marcada em verde"
 
-                # ── F3: marca vermelho / desmarca ─────────────────────
-                elif k == curses.KEY_F3:
+                # ── F3 ou 3: marca vermelho / desmarca ────────────────
+                elif k == curses.KEY_F3 or k == "3":
                     if self.marks.get(self.row) == "red":
                         del self.marks[self.row]          # desmarca
                         self.status = "  Marcação removida"
@@ -1323,7 +1804,9 @@ class FilesBrowser:
         h, w = self.stdscr.getmaxyx()
 
         folder = self.cfg.get("folder_name", "GetexDocs")
-        header = f"  getex get all  │  ~/Desktop/{folder}/  │  {len(self.files)} arquivo(s)"
+        utag   = fb_status_tag()
+        usuffix = f"  │  {utag}" if utag else ""
+        header = f"  getex get all  │  ~/Desktop/{folder}/  │  {len(self.files)} arquivo(s){usuffix}"
         try:
             self.stdscr.addstr(0, 0, header[:w].ljust(w - 1),
                                curses.color_pair(9) | curses.A_BOLD)
@@ -1445,7 +1928,7 @@ class FilesBrowser:
                     except curses.error:
                         pass
 
-        hints = " ↑↓ navegar │ ◀▶ trocar dia │ c calendário │ r organizar com IA │ d deletar │ Enter editar │ q sair "
+        hints = " ↑↓ navegar │ c calendário │ r organizar IA │ s sincronizar │ d deletar │ Enter editar │ q sair "
         try:
             self.stdscr.addstr(h - 2, 0, hints[:w].ljust(w - 1), curses.color_pair(5))
         except curses.error:
@@ -1642,14 +2125,40 @@ class FilesBrowser:
                 self.p_scroll = max(0, len(prev) - (h - 4))
             elif k == "d":
                 if self.files:
+                    fpath = self.files[self.sel][0]
                     fname = self.files[self.sel][1]
                     if self.confirm_delete(fname):
-                        os.remove(self.files[self.sel][0])
+                        meta = load_sidecar(fpath)
+                        if meta and meta.get("id"):
+                            # propaga a exclusão para o Firestore (ou enfileira)
+                            if fb_is_online():
+                                try:
+                                    fb_db().collection("notes").document(meta["id"]).set(
+                                        {"deleted": True, "updated_at": time.time()}, merge=True)
+                                except Exception:
+                                    add_tombstone(meta["id"], meta.get("workspace_id"))
+                            else:
+                                add_tombstone(meta["id"], meta.get("workspace_id"))
+                        _delete_local(fpath)
                         self.update_files_list()
                         self.p_scroll = 0
             elif k in ("r", "R"):
                 self.ai_organize()
                 self.p_scroll = 0
+            elif k in ("s", "S"):
+                if not fb_is_real_user():
+                    self._show_msg("  Sem login Firebase — modo local ", curses.color_pair(5))
+                else:
+                    self._show_msg("  ⏳ Sincronizando... ", curses.color_pair(6))
+                    folder = os.path.expanduser(f"~/Desktop/{self.cfg.get('folder_name','GetexDocs')}")
+                    pushed, pulled, st = sync_notes(folder)
+                    self.update_files_list()
+                    if st == "ok":
+                        self._show_msg(f"  ✓ Sincronizado: {pushed}↑ {pulled}↓ ", curses.color_pair(6))
+                    elif st == "offline":
+                        self._show_msg("  [!] Offline — nada sincronizado ", curses.color_pair(3))
+                    else:
+                        self._show_msg(f"  [!] {st} ", curses.color_pair(3))
             elif is_esc(k) or k in ("q", "Q"):
                 return
 
@@ -1880,6 +2389,172 @@ class ConfigMenu:
                 return
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# TELA DE LOGIN  (email + senha)
+# ═══════════════════════════════════════════════════════════════════════════════
+class LoginScreen:
+    """Login/cadastro simples por email e senha. Retorna a sessão ou None (sair)."""
+
+    LABELS = {"name": "Nome", "email": "Email", "senha": "Senha", "password": "Senha"}
+
+    def __init__(self, stdscr, cfg, online):
+        self.stdscr = stdscr
+        self.cfg    = cfg
+        self.online = online
+        self.mode   = "login"     # ou "register"
+        self.fields = {"name": "", "email": "", "password": ""}
+        last = load_session()
+        if last:
+            self.fields["email"] = last.get("email", "")
+        self.idx = 1 if self.fields["email"] else 0
+        self.msg = ""
+        curses.set_escdelay(25)
+        init_colors(cfg)
+        self.stdscr.bkgd(' ', curses.color_pair(16))
+        curses.curs_set(1)
+        self.stdscr.keypad(True)
+
+    def _order(self):
+        return ["name", "email", "password"] if self.mode == "register" else ["email", "password"]
+
+    def render(self):
+        self.stdscr.erase()
+        h, w = self.stdscr.getmaxyx()
+        cx = max(2, w // 2 - 24)
+        order = self._order()
+
+        title = "G E T E X" if self.mode == "login" else "G E T E X  —  Criar conta"
+        try:
+            self.stdscr.addstr(2, max(0, w // 2 - len(title) // 2), title,
+                               curses.color_pair(8) | curses.A_BOLD)
+        except curses.error:
+            pass
+
+        stat  = "● online" if self.online else "○ offline (apenas local)"
+        spair = curses.color_pair(6) if self.online else curses.color_pair(3)
+        try:
+            self.stdscr.addstr(3, max(0, w // 2 - len(stat) // 2), stat, spair | curses.A_BOLD)
+        except curses.error:
+            pass
+
+        labels = {"name": "Nome", "email": "Email", "password": "Senha"}
+        y = 6
+        for f in order:
+            val    = self.fields[f]
+            shown  = "•" * len(val) if f == "password" else val
+            marker = "▶ " if f == order[self.idx] else "  "
+            line   = f"{marker}{labels[f]:<6}: {shown}"
+            pair   = curses.color_pair(7) | curses.A_BOLD if f == order[self.idx] else curses.color_pair(16)
+            try:
+                self.stdscr.addstr(y, cx, line[:w - cx - 1].ljust(40), pair)
+            except curses.error:
+                pass
+            y += 2
+
+        # Linha contextual para descoberta do cadastro
+        if self.mode == "login":
+            tip = "› Não tem conta? Pressione F2 para criar uma."
+        else:
+            tip = "› Já tem conta? Pressione F2 para entrar."
+        try:
+            self.stdscr.addstr(y, cx, tip[:w - cx - 1], curses.color_pair(4))
+        except curses.error:
+            pass
+
+        if self.msg:
+            try:
+                self.stdscr.addstr(y + 2, cx, self.msg[:w - cx - 1],
+                                   curses.color_pair(3) | curses.A_BOLD)
+            except curses.error:
+                pass
+
+        if self.mode == "login":
+            hint = " Enter: entrar │ Tab/↑↓: campo │ F2: criar conta │ Esc: sair "
+        else:
+            hint = " Enter: cadastrar │ Tab/↑↓: campo │ F2: voltar ao login │ Esc: sair "
+        try:
+            self.stdscr.addstr(h - 2, 0, hint[:w].ljust(w - 1), curses.color_pair(5))
+        except curses.error:
+            pass
+
+        # posiciona o cursor no fim do campo ativo
+        cur = order[self.idx]
+        cur_y = 6 + order.index(cur) * 2
+        val   = self.fields[cur]
+        shown_len = len(val)
+        try:
+            self.stdscr.move(cur_y, min(cx + 8 + shown_len, w - 1))
+        except curses.error:
+            pass
+        self.stdscr.refresh()
+
+    def submit(self):
+        email = self.fields["email"].strip()
+        pw    = self.fields["password"]
+        if not email or not pw:
+            self.msg = "Preencha email e senha."
+            return None
+        db = fb_db()
+        if self.mode == "register":
+            if not self.online or db is None:
+                self.msg = "Precisa estar online para criar conta."
+                return None
+            user, err = fb_create_user(db, email, pw, self.fields["name"])
+            if err:
+                self.msg = err
+                return None
+            save_session(user)
+            _fb_state["user"] = user
+            return user
+        # login
+        if self.online and db is not None:
+            user, err = fb_login(db, email, pw)
+            if err:
+                self.msg = err
+                return None
+            save_session(user)
+            _fb_state["user"] = user
+            return user
+        user, err = offline_login(email, pw)
+        if err:
+            self.msg = err
+            return None
+        _fb_state["user"] = user
+        return user
+
+    def run(self):
+        while True:
+            self.render()
+            try:
+                k = self.stdscr.get_wch()
+            except curses.error:
+                continue
+            order = self._order()
+            cur   = order[self.idx]
+
+            if is_esc(k):
+                return None
+            elif k == curses.KEY_F2:
+                self.mode = "register" if self.mode == "login" else "login"
+                self.idx  = 0
+                self.msg  = ""
+            elif k in (curses.KEY_DOWN, "\t"):
+                self.idx = (self.idx + 1) % len(order)
+            elif k == curses.KEY_UP:
+                self.idx = (self.idx - 1) % len(order)
+            elif is_enter(k):
+                if self.idx < len(order) - 1:
+                    self.idx += 1
+                else:
+                    res = self.submit()
+                    if res is not None:
+                        return res
+            elif is_backspace(k):
+                self.fields[cur] = self.fields[cur][:-1]
+            elif isinstance(k, str) and len(k) == 1 and ord(k) >= 32:
+                self.fields[cur] += k
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # PONTO DE ENTRADA
 # ═══════════════════════════════════════════════════════════════════════════════
 def show_help():
@@ -1902,7 +2577,7 @@ e integração com Inteligência Artificial.
   Setas Direcionais      Navegar o cursor.
   g / G                  Ir para a primeira linha / última linha do arquivo.
   dd                     Apagar a linha atual inteira.
-  F2 / F3                Marcar a linha atual com bolinha Verde (F2) ou Vermelha (F3).
+  F2 / F3  (ou 2 / 3)    Marcar a linha atual com bolinha Verde (F2/2) ou Vermelha (F3/3).
   :                      Abrir barra de comandos (veja os comandos abaixo).
 
 [ Editor - Comandos da Barra ( : ) ]
@@ -1914,6 +2589,9 @@ e integração com Inteligência Artificial.
   :theme                 Abre o menu para mudar o esquema de cores e fundo.
   :rename <nome>         Renomeia o arquivo ou define o título (ou :title <nome>).
   :set key <chave>       Configura a sua Chave de API de IA (Gemini ou OpenAI).
+  :sync                  Sincroniza as notas com o Firebase (quando online).
+  :whoami                Mostra o usuário logado e o status de conexão.
+  :logout                Encerra a sessão atual.
   :help                  Mostra a lista completa de comandos dentro do editor.
 
 [ Editor - Modo de Inserção ]
@@ -1950,10 +2628,31 @@ def main():
     if cfg is None:
         cfg = first_run_setup()
 
-    os.makedirs(
-        os.path.expanduser(f"~/Desktop/{cfg['folder_name']}"),
-        exist_ok=True
-    )
+    folder = os.path.expanduser(f"~/Desktop/{cfg['folder_name']}")
+    os.makedirs(folder, exist_ok=True)
+
+    # ── Firebase: init + login ───────────────────────────────────────────────
+    # Fluxo: sessão salva → entra direto (auto-resume); sem sessão e Firebase
+    # configurado → tela de login; Firebase ausente → modo local (sem gate).
+    fb_init()
+    online  = check_online()
+    session = load_session()
+    if session:
+        _fb_state["user"] = session
+    elif fb_db() is None:
+        _fb_state["user"] = LOCAL_GUEST
+    else:
+        def _login(stdscr):
+            return LoginScreen(stdscr, cfg, online).run()
+        user = curses.wrapper(_login)
+        if user is None:
+            print("\nLogin cancelado.\n")
+            return
+        _fb_state["user"] = user
+
+    # Sincronização inicial (best-effort) antes de abrir a interface
+    if fb_is_real_user() and fb_is_online():
+        sync_notes(folder)
 
     if args == ["get", "all"]:
         def _browse(stdscr):
