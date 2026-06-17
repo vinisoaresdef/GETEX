@@ -314,8 +314,7 @@ def build_filepath(cfg, title=None):
     Formato: DOC_YYYY-MM-DD_HH-MM[_titulo].txt
     A hora é incluída para evitar colisão quando há múltiplos arquivos no dia.
     """
-    folder_path = os.path.expanduser(f"~/Desktop/{cfg.get('folder_name','GetexDocs')}")
-    os.makedirs(folder_path, exist_ok=True)
+    folder_path = active_folder(cfg)
     now   = datetime.datetime.now()
     stamp = now.strftime("%Y-%m-%d_%H-%M")
     if title:
@@ -559,66 +558,168 @@ def verify_password(password, salt, expected_hash):
     _, h = hash_password(password, salt)
     return secrets.compare_digest(h, expected_hash)
 
-# ─── Usuários / autenticação ─────────────────────────────────────────────────
-def fb_find_user(db, email):
+# ─── Workspaces ──────────────────────────────────────────────────────────────
+# Modelo: o usuário escolhe um WORKSPACE (ex.: UMTI, PESSOAL) e tem uma conta
+# DENTRO daquele workspace. A mesma pessoa pode ter contas em workspaces
+# diferentes (logins separados). As notas pertencem ao workspace, então todos
+# os membros de um workspace veem as mesmas notas.
+#
+# Firestore:
+#   workspaces/{WID}              → {name, key_salt, key_hash, created_at, created_by}
+#   workspaces/{WID}/users/{uid}  → {email, name, salt, password_hash, created_at}
+#   notes/{noteid}                → {workspace_id: WID, owner_uid, author_email, ...}
+#
+# WID = nome normalizado do workspace (maiúsculas, sem espaços/símbolos), o que
+# garante unicidade e serve de identificador digitável no login.
+# Para criar/entrar num workspace é preciso a CHAVE do workspace (segredo) —
+# é isso que mantém o PESSOAL privado e o UMTI restrito a quem tem a chave.
+
+def normalize_ws(name):
+    """Normaliza o nome do workspace para usar como ID do documento."""
+    s = (name or "").strip().upper()
+    out = []
+    for ch in s:
+        if ch.isalnum():
+            out.append(ch)
+        elif ch in (" ", "-", "_"):
+            out.append("_")
+        # demais caracteres são descartados
+    return "".join(out)[:64]
+
+def fb_find_workspace(db, wid):
+    snap = db.collection("workspaces").document(wid).get()
+    if snap.exists:
+        w = snap.to_dict()
+        w["id"] = wid
+        return w
+    return None
+
+def fb_find_user_in_ws(db, wid, email):
     email = email.strip().lower()
-    for d in _where(db.collection("users"), "email", "==", email).limit(1).stream():
+    coll = db.collection("workspaces").document(wid).collection("users")
+    for d in _where(coll, "email", "==", email).limit(1).stream():
         u = d.to_dict()
         u["uid"] = d.id
         return u
     return None
 
-def _session_from(u):
+def _session_from(u, wid, ws_name):
     return {
         "uid": u["uid"], "email": u["email"], "name": u.get("name", ""),
-        "workspace_id": u.get("personal_workspace") or u.get("workspace_id"),
+        "workspace_id": wid, "workspace_name": ws_name,
         "salt": u.get("salt", ""), "password_hash": u.get("password_hash", ""),
     }
 
-def fb_create_user(db, email, password, name=""):
+def _create_user_doc(db, wid, email, password, name):
+    """Cria o documento de usuário dentro do workspace e devolve (uid, salt, hash)."""
+    salt, h = hash_password(password)
+    uid = uuid.uuid4().hex
+    nm  = name.strip() or email.split("@")[0]
+    db.collection("workspaces").document(wid).collection("users").document(uid).set({
+        "email": email, "name": nm, "salt": salt, "password_hash": h,
+        "created_at": time.time(),
+    })
+    return uid, salt, h, nm
+
+def fb_create_workspace(db, ws_name, email, password, name=""):
+    """Cria um NOVO workspace (o nome é a chave primária — não pode existir outro
+    igual) e a conta do criador, que vira o administrador. Sem chave de acesso."""
     email = email.strip().lower()
+    wid   = normalize_ws(ws_name)
+    if not wid:
+        return None, "Informe um nome de workspace válido"
     try:
-        if fb_find_user(db, email):
-            return None, "Email já cadastrado"
-        salt, h = hash_password(password)
-        uid = uuid.uuid4().hex
-        wid = "ws_" + uuid.uuid4().hex
-        nm  = name.strip() or email.split("@")[0]
-        now = time.time()
-        db.collection("users").document(uid).set({
-            "email": email, "name": nm, "salt": salt, "password_hash": h,
-            "personal_workspace": wid, "created_at": now,
-        })
+        if fb_find_workspace(db, wid) is not None:
+            return None, f"Workspace '{wid}' já existe — peça ao admin para te adicionar"
+        uid, salt, h, nm = _create_user_doc(db, wid, email, password, name)
         db.collection("workspaces").document(wid).set({
-            "name": f"{nm} (pessoal)", "owner_uid": uid, "members": [uid],
-            "personal": True, "created_at": now,
+            "name": wid, "created_at": time.time(),
+            "created_by": email, "admin_uid": uid,
         })
         return _session_from({"uid": uid, "email": email, "name": nm,
-                              "personal_workspace": wid, "salt": salt,
-                              "password_hash": h}), None
+                              "salt": salt, "password_hash": h}, wid, wid), None
     except Exception as e:
         return None, _friendly_fb_error(e)
 
-def fb_login(db, email, password):
+def fb_add_member(db, wid, email, password, name=""):
+    """Ação do ADMIN: cria a conta de um usuário dentro de um workspace existente."""
+    email = email.strip().lower()
     try:
-        u = fb_find_user(db, email)
+        if fb_find_workspace(db, wid) is None:
+            return None, "Workspace não encontrado"
+        if fb_find_user_in_ws(db, wid, email):
+            return None, "Email já cadastrado neste workspace"
+        _create_user_doc(db, wid, email, password, name)
+        return True, None
+    except Exception as e:
+        return None, _friendly_fb_error(e)
+
+def fb_login(db, ws_name, email, password):
+    wid = normalize_ws(ws_name)
+    if not wid:
+        return None, "Informe o workspace"
+    try:
+        ws = fb_find_workspace(db, wid)
+        if ws is None:
+            return None, "Workspace não encontrado"
+        u = fb_find_user_in_ws(db, wid, email)
     except Exception as e:
         return None, _friendly_fb_error(e)
     if not u:
-        return None, "Usuário não encontrado"
+        return None, "Usuário não encontrado neste workspace"
     if not verify_password(password, u.get("salt", ""), u.get("password_hash", "")):
         return None, "Senha incorreta"
-    return _session_from(u), None
+    return _session_from(u, wid, ws.get("name", wid)), None
 
-def offline_login(email, password):
+def offline_login(ws_name, email, password):
     s = load_session()
     if not s:
         return None, "Sem sessão local — conecte-se para o 1º login."
+    if s.get("workspace_id", "") != normalize_ws(ws_name):
+        return None, "Offline: só o último workspace usado está disponível."
     if s.get("email", "").lower() != email.strip().lower():
         return None, "Offline: apenas o último usuário pode entrar."
     if not verify_password(password, s.get("salt", ""), s.get("password_hash", "")):
         return None, "Senha incorreta"
     return s, None
+
+# ─── Gestão de conta / membros do workspace ──────────────────────────────────
+def fb_change_password(db, wid, uid, old_pw, new_pw):
+    """Verifica a senha atual e grava a nova. Retorna ((salt,hash), None) ou (False, erro)."""
+    try:
+        ref  = db.collection("workspaces").document(wid).collection("users").document(uid)
+        snap = ref.get()
+        if not snap.exists:
+            return False, "Conta não encontrada"
+        u = snap.to_dict()
+        if not verify_password(old_pw, u.get("salt", ""), u.get("password_hash", "")):
+            return False, "Senha atual incorreta"
+        salt, h = hash_password(new_pw)
+        ref.update({"salt": salt, "password_hash": h})
+        return (salt, h), None
+    except Exception as e:
+        return False, _friendly_fb_error(e)
+
+def fb_list_members(db, wid):
+    """Lista os usuários (membros) de um workspace."""
+    out = []
+    for d in db.collection("workspaces").document(wid).collection("users").stream():
+        u = d.to_dict()
+        out.append({"uid": d.id, "email": u.get("email", ""), "name": u.get("name", "")})
+    out.sort(key=lambda m: m["email"])
+    return out
+
+def fb_remove_member(db, wid, uid):
+    try:
+        db.collection("workspaces").document(wid).collection("users").document(uid).delete()
+        return True, None
+    except Exception as e:
+        return False, _friendly_fb_error(e)
+
+def fb_workspace_creator(db, wid):
+    """Email de quem criou o workspace (é o 'admin' que pode remover membros)."""
+    ws = fb_find_workspace(db, wid)
+    return (ws or {}).get("created_by", "")
 
 # ─── Sessão local ────────────────────────────────────────────────────────────
 def save_session(user):
@@ -859,7 +960,24 @@ def fb_status_tag():
     if not fb_is_real_user():
         return ""
     dot = "●" if fb_is_online() else "○"
-    return f"{dot} {fb_user().get('email','')}"
+    u = fb_user()
+    ws = u.get("workspace_name") or u.get("workspace_id", "")
+    return f"{dot} {ws}/{u.get('email','')}"
+
+def active_folder(cfg):
+    """Pasta local das notas, isolada por workspace quando há login.
+
+    - Usuário real  → ~/Desktop/<pasta>/<WORKSPACE>/  (notas separadas por ws)
+    - Modo local    → ~/Desktop/<pasta>/               (comportamento clássico)
+    """
+    base = os.path.expanduser(f"~/Desktop/{cfg.get('folder_name','GetexDocs')}")
+    u = fb_user()
+    if u and u.get("uid") != "local" and u.get("workspace_id"):
+        path = os.path.join(base, u["workspace_id"])
+    else:
+        path = base
+    os.makedirs(path, exist_ok=True)
+    return path
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # EDITOR
@@ -1190,6 +1308,18 @@ class GetexEditor:
             curses.curs_set(1)
             self.status = "✓ Configurações atualizadas"
             return "STAY", None
+        if cmd in ("account", "conta", "passwd", "senha"):
+            if not fb_is_real_user():
+                self.status = "[!] Disponível apenas com login Firebase"
+                return "STAY", None
+            start = "passwd" if cmd in ("passwd", "senha") else "menu"
+            am = AccountMenu(self.stdscr, self.cfg, start=start)
+            am.run()
+            init_colors(self.cfg)
+            self.stdscr.bkgd(' ', curses.color_pair(16))
+            curses.curs_set(1)
+            self.status = am.status or "✓ Conta"
+            return "STAY", None
         if cmd == "wq":
             if self.source_file:
                 path = save_document(self.lines, self.cfg,
@@ -1203,7 +1333,7 @@ class GetexEditor:
             tag = "  ☁" if fb_is_online() else ""
             return "QUIT", f"✓ Salvo em {path}{tag}"
         if cmd in ("sync", "s"):
-            folder = os.path.expanduser(f"~/Desktop/{self.cfg.get('folder_name','GetexDocs')}")
+            folder = active_folder(self.cfg)
             if not fb_is_real_user():
                 self.status = "[!] Sem login Firebase — modo local"
                 return "STAY", None
@@ -1224,7 +1354,8 @@ class GetexEditor:
             if fb_is_real_user():
                 u = fb_user()
                 net = "online" if fb_is_online() else "offline"
-                self.status = f"  {u.get('email')} · {net} · ws={u.get('workspace_id','')[:10]}"
+                ws = u.get('workspace_name') or u.get('workspace_id','')
+                self.status = f"  workspace: {ws} · {u.get('email')} · {net}"
             else:
                 self.status = "  modo local (sem login Firebase)"
             return "STAY", None
@@ -1314,7 +1445,9 @@ class GetexEditor:
             "  :title <nome>   (igual a :rename)",
             "  :set key <ch>   Definir a chave de API de IA",
             "  :sync           Sincronizar as notas com o Firebase",
-            "  :whoami         Mostrar usuário logado e status de conexão",
+            "  :account        Conta: trocar senha / ver/remover membros",
+            "  :passwd         Trocar a sua senha",
+            "  :whoami         Mostrar usuário/workspace e status de conexão",
             "  :logout         Encerrar a sessão (pede login na próxima vez)",
             "  :help           Mostrar esta tela de ajuda",
             "",
@@ -1331,6 +1464,7 @@ class GetexEditor:
             "",
             "[ Navegador de Arquivos ]  (getex get all)",
             "  ↑ ↓  /  j k     Navegar pela lista de arquivos",
+            "  n               Criar uma nova nota (pede o nome e abre o editor)",
             "  Enter           Abrir o arquivo no editor",
             "  c               Mostrar/ocultar o calendário",
             "  ← →  /  h l     Trocar de dia (com calendário ativo)",
@@ -1732,7 +1866,7 @@ class GetexEditor:
 # NAVEGADOR DE ARQUIVOS  — getex get all
 # ═══════════════════════════════════════════════════════════════════════════════
 def list_docs(cfg):
-    folder = os.path.expanduser(f"~/Desktop/{cfg.get('folder_name','GetexDocs')}")
+    folder = active_folder(cfg)
     if not os.path.isdir(folder):
         return []
     files = []
@@ -1928,7 +2062,7 @@ class FilesBrowser:
                     except curses.error:
                         pass
 
-        hints = " ↑↓ navegar │ c calendário │ r organizar IA │ s sincronizar │ d deletar │ Enter editar │ q sair "
+        hints = " ↑↓ navegar │ n nova │ c calendário │ r organizar IA │ s sync │ d deletar │ Enter editar │ q sair "
         try:
             self.stdscr.addstr(h - 2, 0, hints[:w].ljust(w - 1), curses.color_pair(5))
         except curses.error:
@@ -2065,6 +2199,42 @@ class FilesBrowser:
 
         curses.wrapper(_edit)
 
+    def prompt_new_name(self):
+        """Pede o nome da nova nota na base da tela. Retorna str ou None (Esc)."""
+        buf = ""
+        curses.curs_set(1)
+        while True:
+            h, w = self.stdscr.getmaxyx()
+            prompt = f" Nome da nova nota (Enter confirma, Esc cancela): {buf}"
+            try:
+                self.stdscr.addstr(h - 1, 0, prompt[:w].ljust(w - 1), curses.color_pair(2))
+                self.stdscr.move(h - 1, min(len(prompt), w - 1))
+            except curses.error:
+                pass
+            self.stdscr.refresh()
+            try:
+                k = self.stdscr.get_wch()
+            except curses.error:
+                continue
+            if is_enter(k):
+                break
+            elif is_esc(k):
+                buf = None
+                break
+            elif is_backspace(k):
+                buf = buf[:-1]
+            elif isinstance(k, str) and len(k) == 1 and ord(k) >= 32:
+                buf += k
+        curses.curs_set(0)
+        return buf
+
+    def open_new(self, title):
+        """Abre o editor com um buffer novo; ao salvar (:wq) vira DOC_..._<titulo>.txt."""
+        def _edit(stdscr):
+            ed = GetexEditor(stdscr, self.cfg, title=title)
+            return ed.run()
+        curses.wrapper(_edit)
+
     def run(self):
         while True:
             self.p_scroll = max(0, self.p_scroll)
@@ -2142,6 +2312,17 @@ class FilesBrowser:
                         _delete_local(fpath)
                         self.update_files_list()
                         self.p_scroll = 0
+            elif k in ("n", "N"):
+                before = {f[0] for f in self.all_files}
+                name = self.prompt_new_name()
+                if name and name.strip():
+                    self.open_new(name.strip())
+                    self.update_files_list()
+                    novos = [i for i, f in enumerate(self.files) if f[0] not in before]
+                    if novos:
+                        self.sel      = novos[0]
+                        self.v_scroll = 0
+                    self.p_scroll = 0
             elif k in ("r", "R"):
                 self.ai_organize()
                 self.p_scroll = 0
@@ -2150,7 +2331,7 @@ class FilesBrowser:
                     self._show_msg("  Sem login Firebase — modo local ", curses.color_pair(5))
                 else:
                     self._show_msg("  ⏳ Sincronizando... ", curses.color_pair(6))
-                    folder = os.path.expanduser(f"~/Desktop/{self.cfg.get('folder_name','GetexDocs')}")
+                    folder = active_folder(self.cfg)
                     pushed, pulled, st = sync_notes(folder)
                     self.update_files_list()
                     if st == "ok":
@@ -2389,6 +2570,309 @@ class ConfigMenu:
                 return
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# MENU DE CONTA / MEMBROS DO WORKSPACE  ( :account / :passwd )
+# ═══════════════════════════════════════════════════════════════════════════════
+class AccountMenu:
+    """Gestão de conta: trocar senha, ver membros do workspace e (se você for o
+    criador do workspace) remover membros."""
+
+    def __init__(self, stdscr, cfg, start="menu"):
+        self.stdscr   = stdscr
+        self.cfg      = cfg
+        self.user     = fb_user() or {}
+        self.wid      = self.user.get("workspace_id", "")
+        self.ws_name  = self.user.get("workspace_name") or self.wid
+        self.status   = ""
+        self.start    = start
+        self.is_admin = False
+        db = fb_db()
+        if db is not None and fb_is_online():
+            try:
+                creator = fb_workspace_creator(db, self.wid)
+                self.is_admin = bool(creator) and creator.lower() == self.user.get("email", "").lower()
+            except Exception:
+                pass
+        self.actions = ["passwd", "members"]
+        if self.is_admin:
+            self.actions += ["add", "remove"]
+        self.sel = 0
+        curses.set_escdelay(25)
+        init_colors(cfg)
+        self.stdscr.bkgd(' ', curses.color_pair(16))
+        curses.curs_set(0)
+        self.stdscr.keypad(True)
+
+    LABELS = {
+        "passwd":  "Trocar minha senha",
+        "members": "Ver membros do workspace",
+        "add":     "Adicionar usuário (admin)",
+        "remove":  "Remover usuário (admin)",
+    }
+
+    # ── helpers de UI ─────────────────────────────────────────────────────────
+    def _header(self, h, w):
+        net = "● online" if fb_is_online() else "○ offline"
+        title = f" :: Conta — workspace {self.ws_name} :: "
+        try:
+            self.stdscr.addstr(2, max(0, w // 2 - len(title) // 2), title,
+                               curses.color_pair(8) | curses.A_BOLD)
+            sub = f"{self.user.get('email','')}   {net}" + ("   [admin]" if self.is_admin else "")
+            self.stdscr.addstr(3, max(0, w // 2 - len(sub) // 2), sub,
+                               curses.color_pair(6) if fb_is_online() else curses.color_pair(3))
+        except curses.error:
+            pass
+
+    def prompt_text(self, label, mask=False):
+        """Captura texto na base da tela. Retorna None se cancelado (Esc)."""
+        buf = ""
+        curses.curs_set(1)
+        while True:
+            h, w = self.stdscr.getmaxyx()
+            shown  = ("•" * len(buf)) if mask else buf
+            prompt = f" {label}: {shown}"
+            try:
+                self.stdscr.addstr(h - 1, 0, prompt[:w].ljust(w - 1), curses.color_pair(2))
+                self.stdscr.move(h - 1, min(len(prompt), w - 1))
+            except curses.error:
+                pass
+            self.stdscr.refresh()
+            k = self.stdscr.get_wch()
+            if is_enter(k):
+                break
+            elif is_esc(k):
+                buf = None
+                break
+            elif is_backspace(k):
+                buf = buf[:-1]
+            elif isinstance(k, str) and len(k) == 1 and ord(k) >= 32:
+                buf += k
+        curses.curs_set(0)
+        return buf
+
+    def render(self):
+        self.stdscr.erase()
+        h, w = self.stdscr.getmaxyx()
+        self._header(h, w)
+        x0 = max(2, w // 2 - 20)
+        for i, a in enumerate(self.actions):
+            prefix = "▶ " if i == self.sel else "  "
+            pair   = curses.color_pair(7) | curses.A_BOLD if i == self.sel else curses.color_pair(16)
+            try:
+                self.stdscr.addstr(6 + i * 2, x0, f"{prefix}{self.LABELS[a]}"[:w - x0 - 1].ljust(34), pair)
+            except curses.error:
+                pass
+        if self.status:
+            try:
+                self.stdscr.addstr(h - 3, 0, self.status[:w].ljust(w - 1),
+                                   curses.color_pair(6) | curses.A_BOLD)
+            except curses.error:
+                pass
+        hint = " ↑↓ navegar │ Enter selecionar │ Esc/q voltar "
+        try:
+            self.stdscr.addstr(h - 2, 0, hint[:w].ljust(w - 1), curses.color_pair(5))
+        except curses.error:
+            pass
+        self.stdscr.refresh()
+
+    # ── ações ───────────────────────────────────────────────────────────────
+    def change_password(self):
+        if not fb_is_online() or fb_db() is None:
+            self.status = "[!] Precisa estar online para trocar a senha"
+            return
+        old = self.prompt_text("Senha atual", mask=True)
+        if not old:
+            return
+        new = self.prompt_text("Nova senha (mín. 4)", mask=True)
+        if not new:
+            return
+        if len(new) < 4:
+            self.status = "[!] Senha muito curta (mín. 4 caracteres)"
+            return
+        conf = self.prompt_text("Confirmar nova senha", mask=True)
+        if conf is None:
+            return
+        if new != conf:
+            self.status = "[!] As senhas não conferem"
+            return
+        res, err = fb_change_password(fb_db(), self.wid, self.user["uid"], old, new)
+        if err:
+            self.status = f"[!] {err}"
+            return
+        salt, h = res
+        self.user["salt"] = salt
+        self.user["password_hash"] = h
+        _fb_state["user"] = self.user
+        save_session(self.user)
+        self.status = "✓ Senha alterada com sucesso"
+
+    def _fetch_members(self):
+        if not fb_is_online() or fb_db() is None:
+            self.status = "[!] Offline — não dá para listar membros"
+            return None
+        try:
+            return fb_list_members(fb_db(), self.wid)
+        except Exception as e:
+            self.status = f"[!] {_friendly_fb_error(e)}"
+            return None
+
+    def show_members(self):
+        members = self._fetch_members()
+        if members is None:
+            return
+        creator = ""
+        try:
+            creator = fb_workspace_creator(fb_db(), self.wid).lower()
+        except Exception:
+            pass
+        top = 0
+        while True:
+            self.stdscr.erase()
+            h, w = self.stdscr.getmaxyx()
+            title = f" Membros de {self.ws_name}  ({len(members)}) "
+            try:
+                self.stdscr.addstr(1, max(0, w // 2 - len(title) // 2), title,
+                                   curses.color_pair(8) | curses.A_BOLD)
+            except curses.error:
+                pass
+            view = h - 4
+            for i in range(view):
+                mi = top + i
+                if mi >= len(members):
+                    break
+                m = members[mi]
+                tags = []
+                if m["email"].lower() == self.user.get("email", "").lower():
+                    tags.append("você")
+                if m["email"].lower() == creator:
+                    tags.append("criador")
+                suffix = f"  ({', '.join(tags)})" if tags else ""
+                line = f"  • {m['email']:<32} {m['name']}{suffix}"
+                try:
+                    self.stdscr.addstr(3 + i, 2, line[:w - 3], curses.color_pair(16))
+                except curses.error:
+                    pass
+            try:
+                self.stdscr.addstr(h - 1, 0, " Esc/Enter/q: voltar ".ljust(w - 1), curses.color_pair(5))
+            except curses.error:
+                pass
+            self.stdscr.refresh()
+            k = self.stdscr.get_wch()
+            if is_esc(k) or is_enter(k) or k in ("q", "Q"):
+                break
+            elif k in (curses.KEY_DOWN, "j"):
+                top = min(top + 1, max(0, len(members) - view))
+            elif k in (curses.KEY_UP, "k"):
+                top = max(0, top - 1)
+
+    def remove_member(self):
+        members = self._fetch_members()
+        if members is None:
+            return
+        creator = ""
+        try:
+            creator = fb_workspace_creator(fb_db(), self.wid).lower()
+        except Exception:
+            pass
+        me = self.user.get("email", "").lower()
+        # não dá para remover a si mesmo nem o criador do workspace
+        cand = [m for m in members if m["email"].lower() not in (me, creator)]
+        if not cand:
+            self.status = "Nenhum membro removível (só você/criador)"
+            return
+        sel = 0
+        while True:
+            self.stdscr.erase()
+            h, w = self.stdscr.getmaxyx()
+            title = f" Remover membro de {self.ws_name} "
+            try:
+                self.stdscr.addstr(1, max(0, w // 2 - len(title) // 2), title,
+                                   curses.color_pair(8) | curses.A_BOLD)
+            except curses.error:
+                pass
+            for i, m in enumerate(cand):
+                prefix = "▶ " if i == sel else "  "
+                pair   = curses.color_pair(7) | curses.A_BOLD if i == sel else curses.color_pair(16)
+                line   = f"{prefix}{m['email']:<32} {m['name']}"
+                try:
+                    self.stdscr.addstr(3 + i, 2, line[:w - 3], pair)
+                except curses.error:
+                    pass
+            try:
+                self.stdscr.addstr(h - 1, 0, " ↑↓ escolher │ Enter remover │ Esc cancelar ".ljust(w - 1),
+                                   curses.color_pair(5))
+            except curses.error:
+                pass
+            self.stdscr.refresh()
+            k = self.stdscr.get_wch()
+            if is_esc(k) or k in ("q", "Q"):
+                return
+            elif k in (curses.KEY_DOWN, "j"):
+                sel = min(sel + 1, len(cand) - 1)
+            elif k in (curses.KEY_UP, "k"):
+                sel = max(0, sel - 1)
+            elif is_enter(k):
+                m = cand[sel]
+                conf = self.prompt_text(f"Remover {m['email']}? (s/n)")
+                if conf and conf.strip().lower() in ("s", "sim", "y"):
+                    ok, err = fb_remove_member(fb_db(), self.wid, m["uid"])
+                    self.status = "✓ Membro removido" if ok else f"[!] {err}"
+                    return
+
+    def add_member(self):
+        if not fb_is_online() or fb_db() is None:
+            self.status = "[!] Precisa estar online para adicionar usuário"
+            return
+        email = self.prompt_text("Email do novo usuário")
+        if not email:
+            return
+        nm = self.prompt_text("Nome (opcional)")
+        if nm is None:
+            return
+        pw = self.prompt_text("Senha inicial (mín. 4)", mask=True)
+        if not pw:
+            return
+        if len(pw) < 4:
+            self.status = "[!] Senha muito curta (mín. 4 caracteres)"
+            return
+        ok, err = fb_add_member(fb_db(), self.wid, email, pw, nm)
+        if err:
+            self.status = f"[!] {err}"
+        else:
+            self.status = f"✓ Usuário {email.strip().lower()} adicionado ao {self.ws_name}"
+
+    def activate(self, action):
+        if action == "passwd":
+            self.change_password()
+        elif action == "members":
+            self.show_members()
+        elif action == "add":
+            self.add_member()
+        elif action == "remove":
+            self.remove_member()
+
+    def run(self):
+        if self.start == "passwd":
+            self.change_password()
+            try:
+                self.sel = self.actions.index("passwd")
+            except ValueError:
+                self.sel = 0
+        while True:
+            self.render()
+            try:
+                k = self.stdscr.get_wch()
+            except curses.error:
+                continue
+            if k in (curses.KEY_UP, "k"):
+                self.sel = max(0, self.sel - 1)
+            elif k in (curses.KEY_DOWN, "j"):
+                self.sel = min(len(self.actions) - 1, self.sel + 1)
+            elif is_enter(k):
+                self.activate(self.actions[self.sel])
+            elif is_esc(k) or k in ("q", "Q"):
+                return
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # TELA DE LOGIN  (email + senha)
 # ═══════════════════════════════════════════════════════════════════════════════
 class LoginScreen:
@@ -2401,11 +2885,17 @@ class LoginScreen:
         self.cfg    = cfg
         self.online = online
         self.mode   = "login"     # ou "register"
-        self.fields = {"name": "", "email": "", "password": ""}
+        self.fields = {"workspace": "", "name": "", "email": "", "password": ""}
         last = load_session()
         if last:
-            self.fields["email"] = last.get("email", "")
-        self.idx = 1 if self.fields["email"] else 0
+            self.fields["workspace"] = last.get("workspace_name") or last.get("workspace_id", "")
+            self.fields["email"]     = last.get("email", "")
+        # começa no 1º campo vazio
+        self.idx = 0
+        for i, f in enumerate(self._order()):
+            if not self.fields[f]:
+                self.idx = i
+                break
         self.msg = ""
         curses.set_escdelay(25)
         init_colors(cfg)
@@ -2414,7 +2904,9 @@ class LoginScreen:
         self.stdscr.keypad(True)
 
     def _order(self):
-        return ["name", "email", "password"] if self.mode == "register" else ["email", "password"]
+        if self.mode == "register":
+            return ["workspace", "name", "email", "password"]
+        return ["workspace", "email", "password"]
 
     def render(self):
         self.stdscr.erase()
@@ -2422,7 +2914,7 @@ class LoginScreen:
         cx = max(2, w // 2 - 24)
         order = self._order()
 
-        title = "G E T E X" if self.mode == "login" else "G E T E X  —  Criar conta"
+        title = "G E T E X" if self.mode == "login" else "G E T E X  —  Criar workspace"
         try:
             self.stdscr.addstr(2, max(0, w // 2 - len(title) // 2), title,
                                curses.color_pair(8) | curses.A_BOLD)
@@ -2436,41 +2928,50 @@ class LoginScreen:
         except curses.error:
             pass
 
-        labels = {"name": "Nome", "email": "Email", "password": "Senha"}
+        labels = {"workspace": "Workspace",
+                  "name": "Nome", "email": "Email", "password": "Senha"}
+        masked = ("password",)
         y = 6
         for f in order:
             val    = self.fields[f]
-            shown  = "•" * len(val) if f == "password" else val
+            shown  = "•" * len(val) if f in masked else val
             marker = "▶ " if f == order[self.idx] else "  "
-            line   = f"{marker}{labels[f]:<6}: {shown}"
+            line   = f"{marker}{labels[f]:<9}: {shown}"
             pair   = curses.color_pair(7) | curses.A_BOLD if f == order[self.idx] else curses.color_pair(16)
             try:
-                self.stdscr.addstr(y, cx, line[:w - cx - 1].ljust(40), pair)
+                self.stdscr.addstr(y, cx, line[:w - cx - 1].ljust(44), pair)
             except curses.error:
                 pass
             y += 2
 
-        # Linha contextual para descoberta do cadastro
+        # Linha contextual
         if self.mode == "login":
-            tip = "› Não tem conta? Pressione F2 para criar uma."
+            tip = "› Para criar um NOVO workspace, pressione F2."
         else:
-            tip = "› Já tem conta? Pressione F2 para entrar."
+            tip = "› Para entrar em um workspace existente, pressione F2."
         try:
             self.stdscr.addstr(y, cx, tip[:w - cx - 1], curses.color_pair(4))
         except curses.error:
             pass
+        if self.mode == "register":
+            try:
+                self.stdscr.addstr(y + 1, cx,
+                    "  (entrar em workspace já criado é o admin que adiciona você)"[:w - cx - 1],
+                    curses.color_pair(4))
+            except curses.error:
+                pass
 
         if self.msg:
             try:
-                self.stdscr.addstr(y + 2, cx, self.msg[:w - cx - 1],
+                self.stdscr.addstr(y + 3, cx, self.msg[:w - cx - 1],
                                    curses.color_pair(3) | curses.A_BOLD)
             except curses.error:
                 pass
 
         if self.mode == "login":
-            hint = " Enter: entrar │ Tab/↑↓: campo │ F2: criar conta │ Esc: sair "
+            hint = " Enter: entrar │ Tab/↑↓: campo │ F2: criar workspace │ Esc: sair "
         else:
-            hint = " Enter: cadastrar │ Tab/↑↓: campo │ F2: voltar ao login │ Esc: sair "
+            hint = " Enter: criar workspace │ Tab/↑↓: campo │ F2: voltar │ Esc: sair "
         try:
             self.stdscr.addstr(h - 2, 0, hint[:w].ljust(w - 1), curses.color_pair(5))
         except curses.error:
@@ -2479,26 +2980,26 @@ class LoginScreen:
         # posiciona o cursor no fim do campo ativo
         cur = order[self.idx]
         cur_y = 6 + order.index(cur) * 2
-        val   = self.fields[cur]
-        shown_len = len(val)
+        shown_len = len(self.fields[cur])
         try:
-            self.stdscr.move(cur_y, min(cx + 8 + shown_len, w - 1))
+            self.stdscr.move(cur_y, min(cx + 13 + shown_len, w - 1))
         except curses.error:
             pass
         self.stdscr.refresh()
 
     def submit(self):
+        ws    = self.fields["workspace"].strip()
         email = self.fields["email"].strip()
         pw    = self.fields["password"]
-        if not email or not pw:
-            self.msg = "Preencha email e senha."
+        if not ws or not email or not pw:
+            self.msg = "Preencha workspace, email e senha."
             return None
         db = fb_db()
         if self.mode == "register":
             if not self.online or db is None:
-                self.msg = "Precisa estar online para criar conta."
+                self.msg = "Precisa estar online para criar workspace."
                 return None
-            user, err = fb_create_user(db, email, pw, self.fields["name"])
+            user, err = fb_create_workspace(db, ws, email, pw, self.fields["name"])
             if err:
                 self.msg = err
                 return None
@@ -2507,14 +3008,14 @@ class LoginScreen:
             return user
         # login
         if self.online and db is not None:
-            user, err = fb_login(db, email, pw)
+            user, err = fb_login(db, ws, email, pw)
             if err:
                 self.msg = err
                 return None
             save_session(user)
             _fb_state["user"] = user
             return user
-        user, err = offline_login(email, pw)
+        user, err = offline_login(ws, email, pw)
         if err:
             self.msg = err
             return None
@@ -2590,7 +3091,9 @@ e integração com Inteligência Artificial.
   :rename <nome>         Renomeia o arquivo ou define o título (ou :title <nome>).
   :set key <chave>       Configura a sua Chave de API de IA (Gemini ou OpenAI).
   :sync                  Sincroniza as notas com o Firebase (quando online).
-  :whoami                Mostra o usuário logado e o status de conexão.
+  :account               Conta: trocar senha, ver/remover membros do workspace.
+  :passwd                Troca a sua senha.
+  :whoami                Mostra o usuário/workspace e o status de conexão.
   :logout                Encerra a sessão atual.
   :help                  Mostra a lista completa de comandos dentro do editor.
 
@@ -2607,6 +3110,7 @@ e integração com Inteligência Artificial.
 
 [ Navegador de Arquivos ] (getex get all)
   j / k  ou ↑ / ↓        Navegar pela lista de arquivos.
+  n                      Criar uma nova nota (pede o nome e abre o editor).
   Enter                  Abrir o arquivo selecionado no editor.
   c                      Exibir/Ocultar o Calendário de filtro de datas à direita.
   h / l  ou ← / →        Navegar entre os dias no Calendário para filtrar a lista.
@@ -2628,8 +3132,7 @@ def main():
     if cfg is None:
         cfg = first_run_setup()
 
-    folder = os.path.expanduser(f"~/Desktop/{cfg['folder_name']}")
-    os.makedirs(folder, exist_ok=True)
+    os.makedirs(os.path.expanduser(f"~/Desktop/{cfg['folder_name']}"), exist_ok=True)
 
     # ── Firebase: init + login ───────────────────────────────────────────────
     # Fluxo: sessão salva → entra direto (auto-resume); sem sessão e Firebase
@@ -2650,9 +3153,9 @@ def main():
             return
         _fb_state["user"] = user
 
-    # Sincronização inicial (best-effort) antes de abrir a interface
+    # Sincronização inicial (best-effort) — usa a pasta do workspace ativo
     if fb_is_real_user() and fb_is_online():
-        sync_notes(folder)
+        sync_notes(active_folder(cfg))
 
     if args == ["get", "all"]:
         def _browse(stdscr):
