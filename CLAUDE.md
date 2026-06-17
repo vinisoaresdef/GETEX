@@ -110,19 +110,21 @@ Optional cloud layer (degrades to local-only if absent). Lives in the
   service account is available, no Web API key). A login is **(workspace, email,
   password)**: the same email can have independent accounts in different workspaces.
   Firestore layout:
-  - `workspaces/{WID}` — `{name, key_salt, key_hash, created_at, created_by}`.
-    `WID` = `normalize_ws(name)` (uppercase, alnum/`_`, ≤64) so the typed name is the
-    doc id. A **workspace key** (PBKDF2-hashed) gates creating/joining — this is what
-    keeps `PESSOAL` private and `UMTI` restricted to whoever has the key.
+  - `workspaces/{WID}` — `{name, created_at, created_by, admin_uid}`. **`WID` =
+    `normalize_ws(name)` is the primary key** (uppercase, alnum/`_`, ≤64): a name is
+    globally unique, so there are **no access keys**. Privacy of `PESSOAL`/`UMTI`
+    comes from the fact that you can't join an existing workspace yourself — only its
+    admin adds you.
   - `workspaces/{WID}/users/{uid}` — `{email, name, salt, password_hash, created_at}`.
   - `notes/{id}` — `{workspace_id: WID, owner_uid, author_email, filename, content,
     marks, updated_at, deleted}`.
-  Functions: `normalize_ws`, `fb_find_workspace`, `fb_find_user_in_ws`, `fb_register`
-  (creates the workspace if new, else verifies its key), `fb_login`, `offline_login`
-  (matches cached workspace+email). `LoginScreen` fields: login = workspace/email/
-  password; register = workspace/key/name/email/password. Session cached in
-  `~/.getex/session.json` (chmod 600); `main()` auto-resumes it, else shows login,
-  else runs `LOCAL_GUEST` (no Firebase).
+  Functions: `normalize_ws`, `fb_find_workspace`, `fb_find_user_in_ws`,
+  `fb_create_workspace` (register = create a NEW workspace; fails if the name exists;
+  the creator becomes admin via `created_by`/`admin_uid`), `fb_add_member` (admin
+  provisions a user), `fb_login`, `offline_login` (matches cached workspace+email).
+  `LoginScreen`: login = workspace/email/password; register = workspace/name/email/
+  password (creates a new workspace). Session cached in `~/.getex/session.json`
+  (chmod 600); `main()` auto-resumes it, else shows login, else `LOCAL_GUEST`.
 - **Local storage is workspace-scoped**: `active_folder(cfg)` returns
   `~/Desktop/<folder>/<WID>/` for a real user (so each workspace's `.txt` notes are
   isolated on disk) and `~/Desktop/<folder>/` for the local guest. `build_filepath`,
@@ -136,9 +138,10 @@ Optional cloud layer (degrades to local-only if absent). Lives in the
 - **Account/member management** (`AccountMenu`, curses): `:account` opens it,
   `:passwd` jumps straight to password change. Trocar senha verifies the old password
   and updates `workspaces/{WID}/users/{uid}` + the local session. The workspace
-  **creator** (`workspaces/{WID}.created_by`) is the admin and can list/remove members
-  (`fb_list_members`/`fb_remove_member`); can't remove self or the creator. There is
-  no password *reset* (forgot-password) flow — only authenticated change.
+  **creator** (`workspaces/{WID}.created_by`) is the admin and can **add** users
+  (`fb_add_member`) and **remove** them (`fb_remove_member`); can't remove self or the
+  creator. There is no password *reset* (forgot-password) flow — only authenticated
+  change; a member who forgets is removed and re-added by the admin.
 - Editor commands: `:sync`, `:whoami`, `:logout`, `:account`, `:passwd`. Browser: `s`
   to sync. Switch workspace = `:logout` then log into another one.
 - **Security caveat**: the service account bypasses Firestore rules (full access), so
@@ -158,9 +161,10 @@ Pure stdlib + `curses`, so it runs on macOS and Linux unchanged. Notes:
   trying `--user` then `--user --break-system-packages`, copies `getex.py` to
   `/usr/local/bin/getex`, prepares `~/.getex/firebase`). Keep it bash 3.2-compatible
   (macOS ships old bash): no associative arrays, no `${var^^}`.
-- **Sharing notes**: each person creates their **own account inside the shared
-  workspace** (using the workspace key) and sees that workspace's notes. They still
-  need the service-account credential (app-level auth uses the Admin SDK).
+- **Sharing notes**: the workspace **admin adds each teammate** (`:account` → add
+  user), setting their initial email/password. The teammate logs in with workspace +
+  email + password and sees that workspace's notes. They still need the
+  service-account credential (app-level auth uses the Admin SDK).
 
 ## Conventions
 

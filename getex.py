@@ -610,40 +610,47 @@ def _session_from(u, wid, ws_name):
         "salt": u.get("salt", ""), "password_hash": u.get("password_hash", ""),
     }
 
-def fb_register(db, ws_name, ws_key, email, password, name=""):
-    """Cria uma conta dentro de um workspace. Cria o workspace se não existir
-    (definindo a chave informada). Se já existir, exige a chave correta."""
+def _create_user_doc(db, wid, email, password, name):
+    """Cria o documento de usuário dentro do workspace e devolve (uid, salt, hash)."""
+    salt, h = hash_password(password)
+    uid = uuid.uuid4().hex
+    nm  = name.strip() or email.split("@")[0]
+    db.collection("workspaces").document(wid).collection("users").document(uid).set({
+        "email": email, "name": nm, "salt": salt, "password_hash": h,
+        "created_at": time.time(),
+    })
+    return uid, salt, h, nm
+
+def fb_create_workspace(db, ws_name, email, password, name=""):
+    """Cria um NOVO workspace (o nome é a chave primária — não pode existir outro
+    igual) e a conta do criador, que vira o administrador. Sem chave de acesso."""
     email = email.strip().lower()
     wid   = normalize_ws(ws_name)
     if not wid:
         return None, "Informe um nome de workspace válido"
-    if not ws_key:
-        return None, "Informe a chave do workspace"
     try:
-        ws = fb_find_workspace(db, wid)
-        if ws is None:
-            # cria o workspace, definindo a chave a partir do que foi informado
-            ks, kh = hash_password(ws_key)
-            db.collection("workspaces").document(wid).set({
-                "name": wid, "key_salt": ks, "key_hash": kh,
-                "created_at": time.time(), "created_by": email,
-            })
-            ws = {"id": wid, "name": wid}
-        else:
-            if not verify_password(ws_key, ws.get("key_salt", ""), ws.get("key_hash", "")):
-                return None, "Chave do workspace incorreta"
-        if fb_find_user_in_ws(db, wid, email):
-            return None, "Email já cadastrado neste workspace"
-        salt, h = hash_password(password)
-        uid = uuid.uuid4().hex
-        nm  = name.strip() or email.split("@")[0]
-        db.collection("workspaces").document(wid).collection("users").document(uid).set({
-            "email": email, "name": nm, "salt": salt, "password_hash": h,
-            "created_at": time.time(),
+        if fb_find_workspace(db, wid) is not None:
+            return None, f"Workspace '{wid}' já existe — peça ao admin para te adicionar"
+        uid, salt, h, nm = _create_user_doc(db, wid, email, password, name)
+        db.collection("workspaces").document(wid).set({
+            "name": wid, "created_at": time.time(),
+            "created_by": email, "admin_uid": uid,
         })
         return _session_from({"uid": uid, "email": email, "name": nm,
-                              "salt": salt, "password_hash": h},
-                             wid, ws.get("name", wid)), None
+                              "salt": salt, "password_hash": h}, wid, wid), None
+    except Exception as e:
+        return None, _friendly_fb_error(e)
+
+def fb_add_member(db, wid, email, password, name=""):
+    """Ação do ADMIN: cria a conta de um usuário dentro de um workspace existente."""
+    email = email.strip().lower()
+    try:
+        if fb_find_workspace(db, wid) is None:
+            return None, "Workspace não encontrado"
+        if fb_find_user_in_ws(db, wid, email):
+            return None, "Email já cadastrado neste workspace"
+        _create_user_doc(db, wid, email, password, name)
+        return True, None
     except Exception as e:
         return None, _friendly_fb_error(e)
 
@@ -2539,7 +2546,7 @@ class AccountMenu:
                 pass
         self.actions = ["passwd", "members"]
         if self.is_admin:
-            self.actions.append("remove")
+            self.actions += ["add", "remove"]
         self.sel = 0
         curses.set_escdelay(25)
         init_colors(cfg)
@@ -2550,7 +2557,8 @@ class AccountMenu:
     LABELS = {
         "passwd":  "Trocar minha senha",
         "members": "Ver membros do workspace",
-        "remove":  "Remover membro (admin)",
+        "add":     "Adicionar usuário (admin)",
+        "remove":  "Remover usuário (admin)",
     }
 
     # ── helpers de UI ─────────────────────────────────────────────────────────
@@ -2762,11 +2770,35 @@ class AccountMenu:
                     self.status = "✓ Membro removido" if ok else f"[!] {err}"
                     return
 
+    def add_member(self):
+        if not fb_is_online() or fb_db() is None:
+            self.status = "[!] Precisa estar online para adicionar usuário"
+            return
+        email = self.prompt_text("Email do novo usuário")
+        if not email:
+            return
+        nm = self.prompt_text("Nome (opcional)")
+        if nm is None:
+            return
+        pw = self.prompt_text("Senha inicial (mín. 4)", mask=True)
+        if not pw:
+            return
+        if len(pw) < 4:
+            self.status = "[!] Senha muito curta (mín. 4 caracteres)"
+            return
+        ok, err = fb_add_member(fb_db(), self.wid, email, pw, nm)
+        if err:
+            self.status = f"[!] {err}"
+        else:
+            self.status = f"✓ Usuário {email.strip().lower()} adicionado ao {self.ws_name}"
+
     def activate(self, action):
         if action == "passwd":
             self.change_password()
         elif action == "members":
             self.show_members()
+        elif action == "add":
+            self.add_member()
         elif action == "remove":
             self.remove_member()
 
@@ -2805,7 +2837,7 @@ class LoginScreen:
         self.cfg    = cfg
         self.online = online
         self.mode   = "login"     # ou "register"
-        self.fields = {"workspace": "", "key": "", "name": "", "email": "", "password": ""}
+        self.fields = {"workspace": "", "name": "", "email": "", "password": ""}
         last = load_session()
         if last:
             self.fields["workspace"] = last.get("workspace_name") or last.get("workspace_id", "")
@@ -2825,7 +2857,7 @@ class LoginScreen:
 
     def _order(self):
         if self.mode == "register":
-            return ["workspace", "key", "name", "email", "password"]
+            return ["workspace", "name", "email", "password"]
         return ["workspace", "email", "password"]
 
     def render(self):
@@ -2834,7 +2866,7 @@ class LoginScreen:
         cx = max(2, w // 2 - 24)
         order = self._order()
 
-        title = "G E T E X" if self.mode == "login" else "G E T E X  —  Criar conta"
+        title = "G E T E X" if self.mode == "login" else "G E T E X  —  Criar workspace"
         try:
             self.stdscr.addstr(2, max(0, w // 2 - len(title) // 2), title,
                                curses.color_pair(8) | curses.A_BOLD)
@@ -2848,9 +2880,9 @@ class LoginScreen:
         except curses.error:
             pass
 
-        labels = {"workspace": "Workspace", "key": "Chave WS",
+        labels = {"workspace": "Workspace",
                   "name": "Nome", "email": "Email", "password": "Senha"}
-        masked = ("password", "key")
+        masked = ("password",)
         y = 6
         for f in order:
             val    = self.fields[f]
@@ -2864,27 +2896,34 @@ class LoginScreen:
                 pass
             y += 2
 
-        # Linha contextual para descoberta do cadastro
+        # Linha contextual
         if self.mode == "login":
-            tip = "› Não tem conta? Pressione F2 para criar uma."
+            tip = "› Para criar um NOVO workspace, pressione F2."
         else:
-            tip = "› Já tem conta? Pressione F2 para entrar."
+            tip = "› Para entrar em um workspace existente, pressione F2."
         try:
             self.stdscr.addstr(y, cx, tip[:w - cx - 1], curses.color_pair(4))
         except curses.error:
             pass
+        if self.mode == "register":
+            try:
+                self.stdscr.addstr(y + 1, cx,
+                    "  (entrar em workspace já criado é o admin que adiciona você)"[:w - cx - 1],
+                    curses.color_pair(4))
+            except curses.error:
+                pass
 
         if self.msg:
             try:
-                self.stdscr.addstr(y + 2, cx, self.msg[:w - cx - 1],
+                self.stdscr.addstr(y + 3, cx, self.msg[:w - cx - 1],
                                    curses.color_pair(3) | curses.A_BOLD)
             except curses.error:
                 pass
 
         if self.mode == "login":
-            hint = " Enter: entrar │ Tab/↑↓: campo │ F2: criar conta │ Esc: sair "
+            hint = " Enter: entrar │ Tab/↑↓: campo │ F2: criar workspace │ Esc: sair "
         else:
-            hint = " Enter: cadastrar │ Tab/↑↓: campo │ F2: voltar ao login │ Esc: sair "
+            hint = " Enter: criar workspace │ Tab/↑↓: campo │ F2: voltar │ Esc: sair "
         try:
             self.stdscr.addstr(h - 2, 0, hint[:w].ljust(w - 1), curses.color_pair(5))
         except curses.error:
@@ -2910,9 +2949,9 @@ class LoginScreen:
         db = fb_db()
         if self.mode == "register":
             if not self.online or db is None:
-                self.msg = "Precisa estar online para criar conta."
+                self.msg = "Precisa estar online para criar workspace."
                 return None
-            user, err = fb_register(db, ws, self.fields["key"], email, pw, self.fields["name"])
+            user, err = fb_create_workspace(db, ws, email, pw, self.fields["name"])
             if err:
                 self.msg = err
                 return None

@@ -112,9 +112,10 @@ O getex pode guardar suas notas no **Cloud Firestore** e sincronizá-las entre m
 
 As notas pertencem a um **workspace**, e cada pessoa tem uma conta **dentro** de um workspace. Quem está no workspace vê as notas daquele workspace — e nada além.
 
-- **Exemplos:** `PESSOAL` (só suas notas) e `UMTI` (notas da equipe). Quem entra no `UMTI` vê só as notas do `UMTI`.
-- **Cada workspace tem uma chave** (segredo) definida na criação. Para **criar conta** num workspace é preciso informar essa chave. É isso que mantém o `PESSOAL` privado e o `UMTI` restrito a quem você autorizar.
-- **A mesma pessoa pode ter contas em workspaces diferentes** (logins separados). Ex.: você pode ter conta no `PESSOAL` e no `UMTI`, cada uma com sua senha. Para trocar de workspace, use `:logout` e entre no outro.
+- **Exemplos:** `PESSOAL` (só suas notas) e `UMTI` (notas da equipe). Quem está no `UMTI` vê só as notas do `UMTI`.
+- **O nome do workspace é a chave primária** — é único. Não pode existir outro `UMTI`. Por isso **não há chave de acesso**: você não consegue "entrar" sozinho num workspace que já existe.
+- **Quem cria o workspace vira o administrador.** É o admin que **adiciona e remove** os usuários daquele workspace (veja `:account` abaixo). Assim o `PESSOAL` continua só seu e o `UMTI` só tem quem você cadastrar.
+- **A mesma pessoa pode ter contas em workspaces diferentes** (logins separados). Para trocar de workspace, use `:logout` e entre no outro.
 - O nome do workspace é normalizado para maiúsculas (`umti` → `UMTI`).
 
 ### Configuração (uma vez)
@@ -139,9 +140,9 @@ As notas pertencem a um **workspace**, e cada pessoa tem uma conta **dentro** de
 Ao abrir o `getex` com o Firebase configurado, aparece a **tela de login**:
 
 - **Entrar:** informe **Workspace**, **Email** e **Senha** e pressione `Enter`.
-- **Criar conta:** pressione `F2` para alternar para o cadastro (**Workspace / Chave WS / Nome / Email / Senha**) e `Enter` para criar.
-  - Se o workspace **não existir**, ele é criado e a chave que você digitar passa a ser a chave dele.
-  - Se já existir, a **chave do workspace** precisa estar correta para você entrar nele.
+- **Criar workspace:** pressione `F2` para alternar para o modo de criação (**Workspace / Nome / Email / Senha**) e `Enter`.
+  - Cria um **novo** workspace e te torna o **administrador** dele.
+  - Se o nome já existir, dá erro (ele é único) — nesse caso, peça ao admin do workspace para te **adicionar** (não há auto-cadastro em workspace existente).
 - A sessão fica salva (`~/.getex/session.json`), então **nas próximas vezes você entra direto** no último workspace. Use `:logout` para sair ou trocar de workspace.
 - O login **offline** funciona para o último (workspace + usuário) que entrou, usando a sessão em cache.
 
@@ -160,29 +161,28 @@ Ao abrir o `getex` com o Firebase configurado, aparece a **tela de login**:
 
 - **Trocar senha** (`:passwd` ou pelo menu `:account`): pede a senha atual e a nova. Atualiza no Firebase e na sessão local.
 - **Ver membros**: lista quem tem conta no workspace atual.
-- **Remover membro**: disponível para o **criador do workspace** (admin). Você escolhe o membro e confirma; ele perde o acesso (a conta dele naquele workspace é apagada). Não é possível remover você mesmo nem o criador. As notas permanecem no workspace.
 
-> Não há recuperação de senha esquecida — apenas troca autenticada. Se um membro esquecer a senha, o admin pode removê-lo e ele se cadastra de novo com a chave do workspace.
+Para o **administrador** do workspace (quem o criou), aparecem também:
+
+- **Adicionar usuário**: você informa email, nome e uma senha inicial; a conta é criada naquele workspace. Passe essas credenciais ao colega — ele troca a senha depois com `:passwd`.
+- **Remover usuário**: escolha o membro e confirme; ele perde o acesso (a conta dele naquele workspace é apagada). Não é possível remover você mesmo nem o criador. As notas permanecem no workspace.
+
+> Não há recuperação de senha esquecida — apenas troca autenticada. Se um membro esquecer a senha, o admin pode removê-lo e adicioná-lo de novo.
 
 > ⚠️ **Segurança:** o *service account* ignora as regras do Firestore (acesso total), então o isolamento entre workspaces é garantido pela aplicação, não pelo banco. É adequado para uma equipe de confiança. O isolamento garantido pelo próprio banco (autenticação Firebase real + regras de segurança, ou um backend) é um endurecimento futuro.
 
 ### Dar acesso a um colega de equipe (ex.: um dev no Mac)
 
-Cada pessoa tem a **própria conta** dentro de um workspace compartilhado — não se compartilha senha. Para um colega acessar o workspace `UMTI`:
+Não se compartilha senha: o **admin cadastra** o colega no workspace. Passo a passo para dar acesso ao `UMTI`:
 
-1. **Baixar** o `getex.py` e o `install.sh` (lado a lado) e rodar `./install.sh`.
-2. **Receber de você** o arquivo `service-account.json` (credencial do projeto) e colocá-lo em:
-   ```bash
-   mkdir -p ~/.getex/firebase
-   mv ~/Downloads/service-account.json ~/.getex/firebase/service-account.json
-   chmod 600 ~/.getex/firebase/service-account.json
-   ```
-3. **Receber de você a chave do workspace** `UMTI` (o segredo definido na criação).
-4. **Abrir** `getex`, pressionar `F2` (criar conta) e preencher: Workspace = `UMTI`, Chave WS = (a chave), e o **próprio** nome/email/senha dele.
+1. O colega **baixa** o `getex.py` e o `install.sh` (lado a lado), roda `./install.sh` e coloca o `service-account.json` em `~/.getex/firebase/` (você envia esse arquivo a ele).
+2. **Você (admin)**, dentro do `UMTI`, abre `:account` → **Adicionar usuário** e cria a conta dele (email + senha inicial).
+3. Você passa a ele o **email e a senha inicial**.
+4. O colega abre `getex` e faz **login**: Workspace = `UMTI`, mais o email/senha que você definiu. Depois ele troca a senha com `:passwd`.
 
-Pronto: ele entra com a conta dele e vê as notas do `UMTI`. As edições dele sobem e aparecem para você após um `:sync`. O seu workspace `PESSOAL` continua invisível para ele (chave diferente).
+Pronto: ele vê as notas do `UMTI`; as edições dele sobem e aparecem para você após um `:sync`. O seu workspace `PESSOAL` continua invisível para ele (ele não tem conta lá).
 
-> 🔒 Você compartilha apenas a **credencial do projeto** e a **chave do workspace de equipe** — nunca a sua senha nem a chave do `PESSOAL`.
+> 🔒 Você compartilha apenas a **credencial do projeto** (`service-account.json`) — nunca a sua senha. O acesso ao workspace é controlado por quem o admin cadastra.
 
 ---
 
