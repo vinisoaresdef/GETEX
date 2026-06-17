@@ -1,6 +1,6 @@
 # getex
 
-Editor de texto modal para terminal Linux, inspirado no Vim. Salva documentos organizados por data na sua Área de Trabalho e tem integração com IA (Google Gemini ou OpenAI).
+Editor de texto modal para terminal Linux, inspirado no Vim. Salva documentos organizados por data na sua Área de Trabalho, tem integração com IA (Google Gemini ou OpenAI) e **sincronização opcional com o Firebase** (login por email/senha, funcionando online e offline).
 
 ---
 
@@ -40,11 +40,19 @@ source ~/.bashrc
 
 ### Dependências
 
-Apenas Python 3 com a biblioteca padrão. Nenhum `pip install` necessário. O módulo `curses` já vem incluso no Python do Linux.
+Para uso **local**, apenas Python 3 com a biblioteca padrão — nenhum `pip install` necessário. O módulo `curses` já vem incluso no Python do Linux.
 
 ```bash
 python3 --version   # precisa ser 3.6 ou superior
 ```
+
+Para a **sincronização com o Firebase** (opcional), instale o SDK Admin:
+
+```bash
+pip install --user --break-system-packages firebase-admin
+```
+
+> O `getex` funciona 100% offline sem essa dependência — ela só é necessária para login e sincronização na nuvem. A flag `--break-system-packages` é necessária em distros com ambiente Python "externally-managed" (Ubuntu 23.04+); a instalação `--user` vai para `~/.local` e não altera os pacotes do sistema.
 
 ---
 
@@ -63,6 +71,61 @@ Chave de API (gemini) [deixe em branco para depois]:
 ```
 
 As respostas ficam salvas em `~/.getex_config` (arquivo JSON editável). Você pode alterar qualquer configuração depois pelo menu `:config` dentro do editor, editando esse arquivo diretamente ou usando o comando `:set key`.
+
+---
+
+## Sincronização com o Firebase (nuvem)
+
+O getex pode guardar suas notas no **Cloud Firestore** e sincronizá-las entre máquinas, com **login por email e senha**. Tudo funciona **offline**: quando não há internet, você edita normalmente e as mudanças sobem assim que a conexão volta.
+
+> Se o Firebase não estiver configurado, o getex roda em **modo local** (como sempre funcionou), sem pedir login.
+
+### Como funciona
+
+- As notas continuam sendo arquivos `.txt` na sua Área de Trabalho (continuam editáveis offline).
+- Cada nota ganha um sidecar `NOME.txt.sync.json` com metadados de sincronização.
+- **Online:** o getex empurra as notas alteradas e puxa as do seu workspace no Firestore.
+- **Offline:** as mudanças ficam pendentes e sobem no próximo `:sync` (ou na próxima abertura online).
+- **Conflitos:** vence a versão mais recente (last-write-wins por horário de edição).
+
+### Configuração (uma vez)
+
+1. No [console do Firebase](https://console.firebase.google.com/), crie o banco **Cloud Firestore** (modo Production/Native, escolha uma região).
+2. Em **Configurações do projeto → Contas de serviço**, gere uma chave privada (JSON do *service account*).
+3. Coloque o arquivo em:
+
+   ```bash
+   mkdir -p ~/.getex/firebase
+   mv ~/Downloads/seu-service-account.json ~/.getex/firebase/service-account.json
+   chmod 600 ~/.getex/firebase/service-account.json
+   ```
+
+   > O getex também aceita o caminho via variável `GETEX_FIREBASE_CRED`.
+   > **Nunca** versione esse arquivo — ele dá acesso total ao banco.
+
+4. Instale o SDK: `pip install --user --break-system-packages firebase-admin`.
+
+### Login e cadastro
+
+Ao abrir o `getex` com o Firebase configurado, aparece a **tela de login**:
+
+- **Entrar:** digite email e senha e pressione `Enter`.
+- **Criar conta:** pressione `F2` para alternar para o cadastro (Nome / Email / Senha) e `Enter` para criar.
+- A sessão fica salva (`~/.getex/session.json`), então **nas próximas vezes você entra direto**. Use `:logout` para sair ou trocar de conta.
+- O login offline funciona para o último usuário que entrou (usando a sessão em cache).
+
+Cada usuário recebe um **workspace pessoal** automaticamente; toda nota carrega o `workspace_id`. (Workspaces de equipe compartilhados são uma fase futura.)
+
+### Comandos de sincronização
+
+| Onde | Comando | Ação |
+|------|---------|------|
+| Editor | `:sync` | Sincroniza agora com o Firebase |
+| Editor | `:whoami` | Mostra o usuário logado e o status (online/offline) |
+| Editor | `:logout` | Encerra a sessão |
+| Navegador | `s` | Sincroniza a lista com o Firebase |
+
+> ⚠️ **Segurança:** o *service account* ignora as regras do Firestore (acesso total). Por enquanto é adequado para uso individual do dono. Antes de distribuir o getex para uma equipe, a recomendação é migrar para autenticação Firebase real + regras de segurança (ou um backend intermediário).
 
 ---
 
@@ -185,6 +248,9 @@ No modo comando, pressione `:` para abrir o prompt. Digite o comando e pressione
 | `:set key SUACHAVE` | Define a chave de API sem sair do editor |
 | `:config` | Abre o menu de configurações (pasta, tema, IA, chave) |
 | `:theme` | Abre o menu de troca de tema de cores |
+| `:sync` | Sincroniza as notas com o Firebase (quando online) |
+| `:whoami` | Mostra o usuário logado e o status de conexão |
+| `:logout` | Encerra a sessão atual |
 | `:help` | Mostra a lista completa de comandos dentro do editor |
 
 ---
@@ -270,9 +336,10 @@ Abre um painel dividido: lista de arquivos à esquerda, preview à direita.
 | `c` | Mostrar/ocultar o **calendário** de filtro por data |
 | `←` / `→` ou `h` / `l` | Trocar de dia (com o calendário ativo); dias com arquivos ficam destacados |
 | `r` | **Reorganizar o arquivo com IA** (reestrutura e sobrescreve o documento) |
+| `s` | **Sincronizar** a lista com o Firebase |
 | `PgUp` / `PgDn` | Rolar o preview sem trocar de arquivo |
 | `Home` / `End` | Ir ao início / fim do preview |
-| `d` | Deletar o arquivo selecionado (pede confirmação `s/n`) |
+| `d` | Deletar o arquivo selecionado (pede confirmação `s/n`) — a exclusão também é propagada para a nuvem |
 | `Esc` ou `q` | Sair do navegador |
 
 O preview à direita mostra as linhas marcadas com F2/F3 já coloridas.

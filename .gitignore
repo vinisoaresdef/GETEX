@@ -1,0 +1,13 @@
+# Credenciais do Firebase — NUNCA versionar
+firebase/
+*-firebase-adminsdk-*.json
+service-account*.json
+
+# Estado local do getex
+.getex/
+*.sync.json
+*.marks
+
+# Python
+__pycache__/
+*.pyc
