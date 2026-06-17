@@ -19,7 +19,6 @@ Seleção de texto (modo inserção):
   Delete / Backspace (com seleção ativa) → apagar seleção
 """
 
-import curses
 import os
 import sys
 import json
@@ -30,6 +29,18 @@ import hashlib
 import secrets
 import datetime
 import calendar
+
+# curses é nativo no Linux/macOS; no Windows vem do pacote 'windows-curses'.
+try:
+    import curses
+except ImportError:
+    if sys.platform.startswith("win"):
+        print("\n[getex] No Windows é preciso o pacote 'windows-curses'.\n"
+              "Instale com:\n    pip install windows-curses\n"
+              "(ou rode o instalador install.ps1)\n")
+    else:
+        print("\n[getex] Módulo 'curses' indisponível neste Python.\n")
+    sys.exit(1)
 
 # ─── Constantes ─────────────────────────────────────────────────────────────
 CONFIG_FILE = os.path.expanduser("~/.getex_config")
@@ -49,6 +60,38 @@ LOCAL_GUEST = {
     "uid": "local", "email": "local", "name": "local",
     "workspace_id": "local", "salt": "", "password_hash": "",
 }
+
+# ─── Compatibilidade entre plataformas (Linux / macOS / Windows) ─────────────
+def safe_set_escdelay(ms=25):
+    """set_escdelay não existe em todas as builds (ex.: windows-curses)."""
+    try:
+        curses.set_escdelay(ms)
+    except Exception:
+        pass
+
+def desktop_dir():
+    """Localiza a 'Área de Trabalho' nas três plataformas.
+
+    Cobre o Desktop redirecionado pelo OneDrive (comum no Windows) e o nome
+    localizado em português no Linux. Cria ~/Desktop como padrão se nada existir.
+    """
+    home = os.path.expanduser("~")
+    candidates = [
+        os.path.join(home, "Desktop"),
+        os.path.join(home, "OneDrive", "Desktop"),
+        os.path.join(home, "OneDrive", "Área de Trabalho"),
+        os.path.join(home, "Área de Trabalho"),
+    ]
+    # também respeita um OneDrive em local não-padrão (variável de ambiente)
+    onedrive = os.environ.get("OneDrive") or os.environ.get("OneDriveConsumer")
+    if onedrive:
+        candidates.insert(1, os.path.join(onedrive, "Desktop"))
+    for c in candidates:
+        if os.path.isdir(c):
+            return c
+    fallback = os.path.join(home, "Desktop")
+    os.makedirs(fallback, exist_ok=True)
+    return fallback
 
 DEFAULT_CONFIG = {
     "folder_name": "GetexDocs",
@@ -386,23 +429,48 @@ def init_colors(cfg=None):
     t = THEMES[theme_name]
 
     curses.start_color()
-    curses.use_default_colors()
-    curses.init_pair(1,  t["insert"][0],  t["insert"][1])
-    curses.init_pair(2,  t["command"][0], t["command"][1])
-    curses.init_pair(3,  t["error"][0],   t["error"][1])
-    curses.init_pair(4,  t["linenum"][0], t["linenum"][1])
-    curses.init_pair(5,  t["cmdbar"][0],  t["cmdbar"][1])
-    curses.init_pair(6,  t["info"][0],    t["info"][1])
-    curses.init_pair(7,  t["listsel"][0], t["listsel"][1])
-    curses.init_pair(8,  t["title"][0],   t["title"][1])
-    curses.init_pair(9,  t["header"][0],  t["header"][1])
-    curses.init_pair(10, t["selection"][0], t["selection"][1])
-    curses.init_pair(11, t["aishortcut"][0], t["aishortcut"][1])
-    curses.init_pair(12, t["mk_g_line"][0], t["mk_g_line"][1])
-    curses.init_pair(13, t["mk_r_line"][0], t["mk_r_line"][1])
-    curses.init_pair(14, t["mk_g_num"][0], t["mk_g_num"][1])
-    curses.init_pair(15, t["mk_r_num"][0], t["mk_r_num"][1])
-    curses.init_pair(16, t["bg_fg"][0], t["bg_fg"][1])
+    # use_default_colors() permite o fundo "-1" (transparente). No Windows
+    # (windows-curses/PDCurses) pode não existir/funcionar — então caímos para
+    # preto/branco quando "-1" não for aceito.
+    try:
+        curses.use_default_colors()
+        default_ok = True
+    except Exception:
+        default_ok = False
+
+    def _pair(idx, fg, bg):
+        if not default_ok:
+            if fg == -1:
+                fg = curses.COLOR_WHITE
+            if bg == -1:
+                bg = curses.COLOR_BLACK
+        try:
+            curses.init_pair(idx, fg, bg)
+        except Exception:
+            # último recurso: substitui -1 e tenta de novo; ignora se falhar
+            try:
+                curses.init_pair(idx,
+                                 curses.COLOR_WHITE if fg == -1 else fg,
+                                 curses.COLOR_BLACK if bg == -1 else bg)
+            except Exception:
+                pass
+
+    _pair(1,  t["insert"][0],  t["insert"][1])
+    _pair(2,  t["command"][0], t["command"][1])
+    _pair(3,  t["error"][0],   t["error"][1])
+    _pair(4,  t["linenum"][0], t["linenum"][1])
+    _pair(5,  t["cmdbar"][0],  t["cmdbar"][1])
+    _pair(6,  t["info"][0],    t["info"][1])
+    _pair(7,  t["listsel"][0], t["listsel"][1])
+    _pair(8,  t["title"][0],   t["title"][1])
+    _pair(9,  t["header"][0],  t["header"][1])
+    _pair(10, t["selection"][0], t["selection"][1])
+    _pair(11, t["aishortcut"][0], t["aishortcut"][1])
+    _pair(12, t["mk_g_line"][0], t["mk_g_line"][1])
+    _pair(13, t["mk_r_line"][0], t["mk_r_line"][1])
+    _pair(14, t["mk_g_num"][0], t["mk_g_num"][1])
+    _pair(15, t["mk_r_num"][0], t["mk_r_num"][1])
+    _pair(16, t["bg_fg"][0], t["bg_fg"][1])
 
 # ─── Marcações de linha ────────────────────────────────────────────────────────
 def marks_path(filepath):
@@ -970,7 +1038,7 @@ def active_folder(cfg):
     - Usuário real  → ~/Desktop/<pasta>/<WORKSPACE>/  (notas separadas por ws)
     - Modo local    → ~/Desktop/<pasta>/               (comportamento clássico)
     """
-    base = os.path.expanduser(f"~/Desktop/{cfg.get('folder_name','GetexDocs')}")
+    base = os.path.join(desktop_dir(), cfg.get('folder_name', 'GetexDocs'))
     u = fb_user()
     if u and u.get("uid") != "local" and u.get("workspace_id"):
         path = os.path.join(base, u["workspace_id"])
@@ -1014,7 +1082,7 @@ class GetexEditor:
         if source_file:
             self.marks = load_marks(source_file)
 
-        curses.set_escdelay(25)
+        safe_set_escdelay()
         init_colors(self.cfg)
         self.stdscr.bkgd(' ', curses.color_pair(16))
         curses.curs_set(1)
@@ -1896,7 +1964,7 @@ class FilesBrowser:
         
         self._update_dates_with_files()
 
-        curses.set_escdelay(25)
+        safe_set_escdelay()
         init_colors(self.cfg)
         self.stdscr.bkgd(' ', curses.color_pair(16))
         curses.curs_set(0)
@@ -2525,7 +2593,7 @@ class ConfigMenu:
             if val is not None and val.strip():
                 self.cfg["folder_name"] = val.strip()
                 try:
-                    os.makedirs(os.path.expanduser(f"~/Desktop/{val.strip()}"), exist_ok=True)
+                    os.makedirs(os.path.join(desktop_dir(), val.strip()), exist_ok=True)
                 except Exception:
                     pass
                 save_config(self.cfg)
@@ -2596,7 +2664,7 @@ class AccountMenu:
         if self.is_admin:
             self.actions += ["add", "remove"]
         self.sel = 0
-        curses.set_escdelay(25)
+        safe_set_escdelay()
         init_colors(cfg)
         self.stdscr.bkgd(' ', curses.color_pair(16))
         curses.curs_set(0)
@@ -2897,7 +2965,7 @@ class LoginScreen:
                 self.idx = i
                 break
         self.msg = ""
-        curses.set_escdelay(25)
+        safe_set_escdelay()
         init_colors(cfg)
         self.stdscr.bkgd(' ', curses.color_pair(16))
         curses.curs_set(1)
@@ -3132,7 +3200,7 @@ def main():
     if cfg is None:
         cfg = first_run_setup()
 
-    os.makedirs(os.path.expanduser(f"~/Desktop/{cfg['folder_name']}"), exist_ok=True)
+    os.makedirs(os.path.join(desktop_dir(), cfg['folder_name']), exist_ok=True)
 
     # ── Firebase: init + login ───────────────────────────────────────────────
     # Fluxo: sessão salva → entra direto (auto-resume); sem sessão e Firebase
