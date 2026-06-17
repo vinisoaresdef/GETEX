@@ -102,11 +102,20 @@ O getex pode guardar suas notas no **Cloud Firestore** e sincronizá-las entre m
 
 ### Como funciona
 
-- As notas continuam sendo arquivos `.txt` na sua Área de Trabalho (continuam editáveis offline).
+- As notas continuam sendo arquivos `.txt` na sua Área de Trabalho (continuam editáveis offline), agora separadas por workspace em `~/Desktop/<pasta>/<WORKSPACE>/`.
 - Cada nota ganha um sidecar `NOME.txt.sync.json` com metadados de sincronização.
 - **Online:** o getex empurra as notas alteradas e puxa as do seu workspace no Firestore.
 - **Offline:** as mudanças ficam pendentes e sobem no próximo `:sync` (ou na próxima abertura online).
 - **Conflitos:** vence a versão mais recente (last-write-wins por horário de edição).
+
+### Workspaces
+
+As notas pertencem a um **workspace**, e cada pessoa tem uma conta **dentro** de um workspace. Quem está no workspace vê as notas daquele workspace — e nada além.
+
+- **Exemplos:** `PESSOAL` (só suas notas) e `UMTI` (notas da equipe). Quem entra no `UMTI` vê só as notas do `UMTI`.
+- **Cada workspace tem uma chave** (segredo) definida na criação. Para **criar conta** num workspace é preciso informar essa chave. É isso que mantém o `PESSOAL` privado e o `UMTI` restrito a quem você autorizar.
+- **A mesma pessoa pode ter contas em workspaces diferentes** (logins separados). Ex.: você pode ter conta no `PESSOAL` e no `UMTI`, cada uma com sua senha. Para trocar de workspace, use `:logout` e entre no outro.
+- O nome do workspace é normalizado para maiúsculas (`umti` → `UMTI`).
 
 ### Configuração (uma vez)
 
@@ -129,12 +138,12 @@ O getex pode guardar suas notas no **Cloud Firestore** e sincronizá-las entre m
 
 Ao abrir o `getex` com o Firebase configurado, aparece a **tela de login**:
 
-- **Entrar:** digite email e senha e pressione `Enter`.
-- **Criar conta:** pressione `F2` para alternar para o cadastro (Nome / Email / Senha) e `Enter` para criar.
-- A sessão fica salva (`~/.getex/session.json`), então **nas próximas vezes você entra direto**. Use `:logout` para sair ou trocar de conta.
-- O login offline funciona para o último usuário que entrou (usando a sessão em cache).
-
-Cada usuário recebe um **workspace pessoal** automaticamente; toda nota carrega o `workspace_id`. (Workspaces de equipe compartilhados são uma fase futura.)
+- **Entrar:** informe **Workspace**, **Email** e **Senha** e pressione `Enter`.
+- **Criar conta:** pressione `F2` para alternar para o cadastro (**Workspace / Chave WS / Nome / Email / Senha**) e `Enter` para criar.
+  - Se o workspace **não existir**, ele é criado e a chave que você digitar passa a ser a chave dele.
+  - Se já existir, a **chave do workspace** precisa estar correta para você entrar nele.
+- A sessão fica salva (`~/.getex/session.json`), então **nas próximas vezes você entra direto** no último workspace. Use `:logout` para sair ou trocar de workspace.
+- O login **offline** funciona para o último (workspace + usuário) que entrou, usando a sessão em cache.
 
 ### Comandos de sincronização
 
@@ -145,26 +154,25 @@ Cada usuário recebe um **workspace pessoal** automaticamente; toda nota carrega
 | Editor | `:logout` | Encerra a sessão |
 | Navegador | `s` | Sincroniza a lista com o Firebase |
 
-> ⚠️ **Segurança:** o *service account* ignora as regras do Firestore (acesso total). Por enquanto é adequado para uso individual do dono. Antes de distribuir o getex para uma equipe, a recomendação é migrar para autenticação Firebase real + regras de segurança (ou um backend intermediário).
+> ⚠️ **Segurança:** o *service account* ignora as regras do Firestore (acesso total), então o isolamento entre workspaces é garantido pela aplicação, não pelo banco. É adequado para uma equipe de confiança. O isolamento garantido pelo próprio banco (autenticação Firebase real + regras de segurança, ou um backend) é um endurecimento futuro.
 
-### Acessar as notas em outra máquina (ex.: um amigo no Mac)
+### Dar acesso a um colega de equipe (ex.: um dev no Mac)
 
-Hoje, cada usuário tem o seu próprio workspace. Para que outra pessoa veja **as suas** notas, ela usa a **mesma conta** que você (mesmo `workspace_id`). Passo a passo para o seu amigo:
+Cada pessoa tem a **própria conta** dentro de um workspace compartilhado — não se compartilha senha. Para um colega acessar o workspace `UMTI`:
 
 1. **Baixar** o `getex.py` e o `install.sh` (lado a lado) e rodar `./install.sh`.
-2. **Receber de você** o arquivo `service-account.json` (a credencial do projeto Firebase) e colocá-lo em:
+2. **Receber de você** o arquivo `service-account.json` (credencial do projeto) e colocá-lo em:
    ```bash
    mkdir -p ~/.getex/firebase
    mv ~/Downloads/service-account.json ~/.getex/firebase/service-account.json
    chmod 600 ~/.getex/firebase/service-account.json
    ```
-3. **Abrir** `getex` e, na tela de login, entrar com **o mesmo email e senha que você usa**.
+3. **Receber de você a chave do workspace** `UMTI` (o segredo definido na criação).
+4. **Abrir** `getex`, pressionar `F2` (criar conta) e preencher: Workspace = `UMTI`, Chave WS = (a chave), e o **próprio** nome/email/senha dele.
 
-Pronto: ao entrar, o getex baixa as suas notas do Firestore e elas aparecem na Área de Trabalho dele. Edições feitas por ele sobem e você as vê após um `:sync`.
+Pronto: ele entra com a conta dele e vê as notas do `UMTI`. As edições dele sobem e aparecem para você após um `:sync`. O seu workspace `PESSOAL` continua invisível para ele (chave diferente).
 
-> Antes de tudo, **você** precisa abrir o getex pelo menos uma vez logado e online, para que as suas notas locais subam para a nuvem (o `:sync` ou o salvamento já fazem isso).
->
-> 🔒 Esse modelo compartilha a conta e a credencial — adequado entre pessoas de confiança. A separação por usuário (cada um com sua conta, acesso a um workspace compartilhado) é a próxima fase do projeto.
+> 🔒 Você compartilha apenas a **credencial do projeto** e a **chave do workspace de equipe** — nunca a sua senha nem a chave do `PESSOAL`.
 
 ---
 

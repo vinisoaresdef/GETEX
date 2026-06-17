@@ -314,8 +314,7 @@ def build_filepath(cfg, title=None):
     Formato: DOC_YYYY-MM-DD_HH-MM[_titulo].txt
     A hora é incluída para evitar colisão quando há múltiplos arquivos no dia.
     """
-    folder_path = os.path.expanduser(f"~/Desktop/{cfg.get('folder_name','GetexDocs')}")
-    os.makedirs(folder_path, exist_ok=True)
+    folder_path = active_folder(cfg)
     now   = datetime.datetime.now()
     stamp = now.strftime("%Y-%m-%d_%H-%M")
     if title:
@@ -559,61 +558,118 @@ def verify_password(password, salt, expected_hash):
     _, h = hash_password(password, salt)
     return secrets.compare_digest(h, expected_hash)
 
-# ─── Usuários / autenticação ─────────────────────────────────────────────────
-def fb_find_user(db, email):
+# ─── Workspaces ──────────────────────────────────────────────────────────────
+# Modelo: o usuário escolhe um WORKSPACE (ex.: UMTI, PESSOAL) e tem uma conta
+# DENTRO daquele workspace. A mesma pessoa pode ter contas em workspaces
+# diferentes (logins separados). As notas pertencem ao workspace, então todos
+# os membros de um workspace veem as mesmas notas.
+#
+# Firestore:
+#   workspaces/{WID}              → {name, key_salt, key_hash, created_at, created_by}
+#   workspaces/{WID}/users/{uid}  → {email, name, salt, password_hash, created_at}
+#   notes/{noteid}                → {workspace_id: WID, owner_uid, author_email, ...}
+#
+# WID = nome normalizado do workspace (maiúsculas, sem espaços/símbolos), o que
+# garante unicidade e serve de identificador digitável no login.
+# Para criar/entrar num workspace é preciso a CHAVE do workspace (segredo) —
+# é isso que mantém o PESSOAL privado e o UMTI restrito a quem tem a chave.
+
+def normalize_ws(name):
+    """Normaliza o nome do workspace para usar como ID do documento."""
+    s = (name or "").strip().upper()
+    out = []
+    for ch in s:
+        if ch.isalnum():
+            out.append(ch)
+        elif ch in (" ", "-", "_"):
+            out.append("_")
+        # demais caracteres são descartados
+    return "".join(out)[:64]
+
+def fb_find_workspace(db, wid):
+    snap = db.collection("workspaces").document(wid).get()
+    if snap.exists:
+        w = snap.to_dict()
+        w["id"] = wid
+        return w
+    return None
+
+def fb_find_user_in_ws(db, wid, email):
     email = email.strip().lower()
-    for d in _where(db.collection("users"), "email", "==", email).limit(1).stream():
+    coll = db.collection("workspaces").document(wid).collection("users")
+    for d in _where(coll, "email", "==", email).limit(1).stream():
         u = d.to_dict()
         u["uid"] = d.id
         return u
     return None
 
-def _session_from(u):
+def _session_from(u, wid, ws_name):
     return {
         "uid": u["uid"], "email": u["email"], "name": u.get("name", ""),
-        "workspace_id": u.get("personal_workspace") or u.get("workspace_id"),
+        "workspace_id": wid, "workspace_name": ws_name,
         "salt": u.get("salt", ""), "password_hash": u.get("password_hash", ""),
     }
 
-def fb_create_user(db, email, password, name=""):
+def fb_register(db, ws_name, ws_key, email, password, name=""):
+    """Cria uma conta dentro de um workspace. Cria o workspace se não existir
+    (definindo a chave informada). Se já existir, exige a chave correta."""
     email = email.strip().lower()
+    wid   = normalize_ws(ws_name)
+    if not wid:
+        return None, "Informe um nome de workspace válido"
+    if not ws_key:
+        return None, "Informe a chave do workspace"
     try:
-        if fb_find_user(db, email):
-            return None, "Email já cadastrado"
+        ws = fb_find_workspace(db, wid)
+        if ws is None:
+            # cria o workspace, definindo a chave a partir do que foi informado
+            ks, kh = hash_password(ws_key)
+            db.collection("workspaces").document(wid).set({
+                "name": wid, "key_salt": ks, "key_hash": kh,
+                "created_at": time.time(), "created_by": email,
+            })
+            ws = {"id": wid, "name": wid}
+        else:
+            if not verify_password(ws_key, ws.get("key_salt", ""), ws.get("key_hash", "")):
+                return None, "Chave do workspace incorreta"
+        if fb_find_user_in_ws(db, wid, email):
+            return None, "Email já cadastrado neste workspace"
         salt, h = hash_password(password)
         uid = uuid.uuid4().hex
-        wid = "ws_" + uuid.uuid4().hex
         nm  = name.strip() or email.split("@")[0]
-        now = time.time()
-        db.collection("users").document(uid).set({
+        db.collection("workspaces").document(wid).collection("users").document(uid).set({
             "email": email, "name": nm, "salt": salt, "password_hash": h,
-            "personal_workspace": wid, "created_at": now,
-        })
-        db.collection("workspaces").document(wid).set({
-            "name": f"{nm} (pessoal)", "owner_uid": uid, "members": [uid],
-            "personal": True, "created_at": now,
+            "created_at": time.time(),
         })
         return _session_from({"uid": uid, "email": email, "name": nm,
-                              "personal_workspace": wid, "salt": salt,
-                              "password_hash": h}), None
+                              "salt": salt, "password_hash": h},
+                             wid, ws.get("name", wid)), None
     except Exception as e:
         return None, _friendly_fb_error(e)
 
-def fb_login(db, email, password):
+def fb_login(db, ws_name, email, password):
+    wid = normalize_ws(ws_name)
+    if not wid:
+        return None, "Informe o workspace"
     try:
-        u = fb_find_user(db, email)
+        ws = fb_find_workspace(db, wid)
+        if ws is None:
+            return None, "Workspace não encontrado"
+        u = fb_find_user_in_ws(db, wid, email)
     except Exception as e:
         return None, _friendly_fb_error(e)
     if not u:
-        return None, "Usuário não encontrado"
+        return None, "Usuário não encontrado neste workspace"
     if not verify_password(password, u.get("salt", ""), u.get("password_hash", "")):
         return None, "Senha incorreta"
-    return _session_from(u), None
+    return _session_from(u, wid, ws.get("name", wid)), None
 
-def offline_login(email, password):
+def offline_login(ws_name, email, password):
     s = load_session()
     if not s:
         return None, "Sem sessão local — conecte-se para o 1º login."
+    if s.get("workspace_id", "") != normalize_ws(ws_name):
+        return None, "Offline: só o último workspace usado está disponível."
     if s.get("email", "").lower() != email.strip().lower():
         return None, "Offline: apenas o último usuário pode entrar."
     if not verify_password(password, s.get("salt", ""), s.get("password_hash", "")):
@@ -859,7 +915,24 @@ def fb_status_tag():
     if not fb_is_real_user():
         return ""
     dot = "●" if fb_is_online() else "○"
-    return f"{dot} {fb_user().get('email','')}"
+    u = fb_user()
+    ws = u.get("workspace_name") or u.get("workspace_id", "")
+    return f"{dot} {ws}/{u.get('email','')}"
+
+def active_folder(cfg):
+    """Pasta local das notas, isolada por workspace quando há login.
+
+    - Usuário real  → ~/Desktop/<pasta>/<WORKSPACE>/  (notas separadas por ws)
+    - Modo local    → ~/Desktop/<pasta>/               (comportamento clássico)
+    """
+    base = os.path.expanduser(f"~/Desktop/{cfg.get('folder_name','GetexDocs')}")
+    u = fb_user()
+    if u and u.get("uid") != "local" and u.get("workspace_id"):
+        path = os.path.join(base, u["workspace_id"])
+    else:
+        path = base
+    os.makedirs(path, exist_ok=True)
+    return path
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # EDITOR
@@ -1203,7 +1276,7 @@ class GetexEditor:
             tag = "  ☁" if fb_is_online() else ""
             return "QUIT", f"✓ Salvo em {path}{tag}"
         if cmd in ("sync", "s"):
-            folder = os.path.expanduser(f"~/Desktop/{self.cfg.get('folder_name','GetexDocs')}")
+            folder = active_folder(self.cfg)
             if not fb_is_real_user():
                 self.status = "[!] Sem login Firebase — modo local"
                 return "STAY", None
@@ -1224,7 +1297,8 @@ class GetexEditor:
             if fb_is_real_user():
                 u = fb_user()
                 net = "online" if fb_is_online() else "offline"
-                self.status = f"  {u.get('email')} · {net} · ws={u.get('workspace_id','')[:10]}"
+                ws = u.get('workspace_name') or u.get('workspace_id','')
+                self.status = f"  workspace: {ws} · {u.get('email')} · {net}"
             else:
                 self.status = "  modo local (sem login Firebase)"
             return "STAY", None
@@ -1732,7 +1806,7 @@ class GetexEditor:
 # NAVEGADOR DE ARQUIVOS  — getex get all
 # ═══════════════════════════════════════════════════════════════════════════════
 def list_docs(cfg):
-    folder = os.path.expanduser(f"~/Desktop/{cfg.get('folder_name','GetexDocs')}")
+    folder = active_folder(cfg)
     if not os.path.isdir(folder):
         return []
     files = []
@@ -2150,7 +2224,7 @@ class FilesBrowser:
                     self._show_msg("  Sem login Firebase — modo local ", curses.color_pair(5))
                 else:
                     self._show_msg("  ⏳ Sincronizando... ", curses.color_pair(6))
-                    folder = os.path.expanduser(f"~/Desktop/{self.cfg.get('folder_name','GetexDocs')}")
+                    folder = active_folder(self.cfg)
                     pushed, pulled, st = sync_notes(folder)
                     self.update_files_list()
                     if st == "ok":
@@ -2401,11 +2475,17 @@ class LoginScreen:
         self.cfg    = cfg
         self.online = online
         self.mode   = "login"     # ou "register"
-        self.fields = {"name": "", "email": "", "password": ""}
+        self.fields = {"workspace": "", "key": "", "name": "", "email": "", "password": ""}
         last = load_session()
         if last:
-            self.fields["email"] = last.get("email", "")
-        self.idx = 1 if self.fields["email"] else 0
+            self.fields["workspace"] = last.get("workspace_name") or last.get("workspace_id", "")
+            self.fields["email"]     = last.get("email", "")
+        # começa no 1º campo vazio
+        self.idx = 0
+        for i, f in enumerate(self._order()):
+            if not self.fields[f]:
+                self.idx = i
+                break
         self.msg = ""
         curses.set_escdelay(25)
         init_colors(cfg)
@@ -2414,7 +2494,9 @@ class LoginScreen:
         self.stdscr.keypad(True)
 
     def _order(self):
-        return ["name", "email", "password"] if self.mode == "register" else ["email", "password"]
+        if self.mode == "register":
+            return ["workspace", "key", "name", "email", "password"]
+        return ["workspace", "email", "password"]
 
     def render(self):
         self.stdscr.erase()
@@ -2436,16 +2518,18 @@ class LoginScreen:
         except curses.error:
             pass
 
-        labels = {"name": "Nome", "email": "Email", "password": "Senha"}
+        labels = {"workspace": "Workspace", "key": "Chave WS",
+                  "name": "Nome", "email": "Email", "password": "Senha"}
+        masked = ("password", "key")
         y = 6
         for f in order:
             val    = self.fields[f]
-            shown  = "•" * len(val) if f == "password" else val
+            shown  = "•" * len(val) if f in masked else val
             marker = "▶ " if f == order[self.idx] else "  "
-            line   = f"{marker}{labels[f]:<6}: {shown}"
+            line   = f"{marker}{labels[f]:<9}: {shown}"
             pair   = curses.color_pair(7) | curses.A_BOLD if f == order[self.idx] else curses.color_pair(16)
             try:
-                self.stdscr.addstr(y, cx, line[:w - cx - 1].ljust(40), pair)
+                self.stdscr.addstr(y, cx, line[:w - cx - 1].ljust(44), pair)
             except curses.error:
                 pass
             y += 2
@@ -2479,26 +2563,26 @@ class LoginScreen:
         # posiciona o cursor no fim do campo ativo
         cur = order[self.idx]
         cur_y = 6 + order.index(cur) * 2
-        val   = self.fields[cur]
-        shown_len = len(val)
+        shown_len = len(self.fields[cur])
         try:
-            self.stdscr.move(cur_y, min(cx + 8 + shown_len, w - 1))
+            self.stdscr.move(cur_y, min(cx + 13 + shown_len, w - 1))
         except curses.error:
             pass
         self.stdscr.refresh()
 
     def submit(self):
+        ws    = self.fields["workspace"].strip()
         email = self.fields["email"].strip()
         pw    = self.fields["password"]
-        if not email or not pw:
-            self.msg = "Preencha email e senha."
+        if not ws or not email or not pw:
+            self.msg = "Preencha workspace, email e senha."
             return None
         db = fb_db()
         if self.mode == "register":
             if not self.online or db is None:
                 self.msg = "Precisa estar online para criar conta."
                 return None
-            user, err = fb_create_user(db, email, pw, self.fields["name"])
+            user, err = fb_register(db, ws, self.fields["key"], email, pw, self.fields["name"])
             if err:
                 self.msg = err
                 return None
@@ -2507,14 +2591,14 @@ class LoginScreen:
             return user
         # login
         if self.online and db is not None:
-            user, err = fb_login(db, email, pw)
+            user, err = fb_login(db, ws, email, pw)
             if err:
                 self.msg = err
                 return None
             save_session(user)
             _fb_state["user"] = user
             return user
-        user, err = offline_login(email, pw)
+        user, err = offline_login(ws, email, pw)
         if err:
             self.msg = err
             return None
@@ -2628,8 +2712,7 @@ def main():
     if cfg is None:
         cfg = first_run_setup()
 
-    folder = os.path.expanduser(f"~/Desktop/{cfg['folder_name']}")
-    os.makedirs(folder, exist_ok=True)
+    os.makedirs(os.path.expanduser(f"~/Desktop/{cfg['folder_name']}"), exist_ok=True)
 
     # ── Firebase: init + login ───────────────────────────────────────────────
     # Fluxo: sessão salva → entra direto (auto-resume); sem sessão e Firebase
@@ -2650,9 +2733,9 @@ def main():
             return
         _fb_state["user"] = user
 
-    # Sincronização inicial (best-effort) antes de abrir a interface
+    # Sincronização inicial (best-effort) — usa a pasta do workspace ativo
     if fb_is_real_user() and fb_is_online():
-        sync_notes(folder)
+        sync_notes(active_folder(cfg))
 
     if args == ["get", "all"]:
         def _browse(stdscr):

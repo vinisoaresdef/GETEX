@@ -106,27 +106,39 @@ Optional cloud layer (degrades to local-only if absent). Lives in the
 - **Global state**: `_fb_state` dict (db, user, online, reason) with accessors
   `fb_db()`, `fb_user()`, `fb_is_online()`, `fb_is_real_user()`, `fb_status_tag()`.
   This avoids threading db/user through every curses constructor.
-- **Auth**: app-level, not Firebase Auth (only a service account is available, no Web
-  API key). Users live in Firestore `users/{uid}` with PBKDF2-SHA256 salted hashes
-  (`hash_password`/`verify_password`). `LoginScreen` (curses) does login/register;
-  session cached in `~/.getex/session.json` (chmod 600) for auto-resume and offline
-  login. `main()` auto-resumes a saved session, else shows login, else (no Firebase)
-  runs as `LOCAL_GUEST`.
+- **Auth model — workspace-scoped accounts** (app-level, not Firebase Auth; only a
+  service account is available, no Web API key). A login is **(workspace, email,
+  password)**: the same email can have independent accounts in different workspaces.
+  Firestore layout:
+  - `workspaces/{WID}` — `{name, key_salt, key_hash, created_at, created_by}`.
+    `WID` = `normalize_ws(name)` (uppercase, alnum/`_`, ≤64) so the typed name is the
+    doc id. A **workspace key** (PBKDF2-hashed) gates creating/joining — this is what
+    keeps `PESSOAL` private and `UMTI` restricted to whoever has the key.
+  - `workspaces/{WID}/users/{uid}` — `{email, name, salt, password_hash, created_at}`.
+  - `notes/{id}` — `{workspace_id: WID, owner_uid, author_email, filename, content,
+    marks, updated_at, deleted}`.
+  Functions: `normalize_ws`, `fb_find_workspace`, `fb_find_user_in_ws`, `fb_register`
+  (creates the workspace if new, else verifies its key), `fb_login`, `offline_login`
+  (matches cached workspace+email). `LoginScreen` fields: login = workspace/email/
+  password; register = workspace/key/name/email/password. Session cached in
+  `~/.getex/session.json` (chmod 600); `main()` auto-resumes it, else shows login,
+  else runs `LOCAL_GUEST` (no Firebase).
+- **Local storage is workspace-scoped**: `active_folder(cfg)` returns
+  `~/Desktop/<folder>/<WID>/` for a real user (so each workspace's `.txt` notes are
+  isolated on disk) and `~/Desktop/<folder>/` for the local guest. `build_filepath`,
+  `list_docs`, and every sync call go through it.
 - **Sync model**: notes stay as `.txt` files; each gets a sidecar
   `<file>.txt.sync.json` = `{id, workspace_id, owner_uid, updated_at, dirty, deleted}`.
-  `sync_notes()` pushes dirty notes then pulls the workspace's notes
+  `sync_notes(folder)` pushes dirty notes then pulls the workspace's notes
   (last-write-wins by `updated_at`). Saving marks dirty (`mark_note_dirty`) and
   best-effort pushes (`push_note_if_online`). Offline deletes are queued as
-  tombstones in `~/.getex/sync/tombstones.json`. Firestore collections: `users`,
-  `workspaces`, `notes`.
-- **Workspaces**: each user gets a personal `workspace_id` at signup; notes carry it.
-  Team workspaces are a planned future phase — the data model already supports them
-  (`workspaces/{wid}` with `members`), but no multi-workspace UI exists yet.
-- Editor commands: `:sync`, `:whoami`, `:logout`. Browser: `s` to sync.
-- **Security caveat**: the service account bypasses Firestore rules (full access).
-  Fine for the single owner now; distributing it to a team would give everyone full
-  DB access. Hardening (real Firebase Auth + rules, or a backend) is deferred to the
-  workspace phase.
+  tombstones in `~/.getex/sync/tombstones.json`.
+- Editor commands: `:sync`, `:whoami`, `:logout`. Browser: `s` to sync. Switch
+  workspace = `:logout` then log into another one.
+- **Security caveat**: the service account bypasses Firestore rules (full access), so
+  workspace isolation is enforced at the app layer, not by the DB. Adequate for a
+  trusted team now; real isolation needs Firebase Auth + security rules (or a backend)
+  — a later hardening step.
 
 ### Cross-platform (macOS + Linux)
 
@@ -140,10 +152,9 @@ Pure stdlib + `curses`, so it runs on macOS and Linux unchanged. Notes:
   trying `--user` then `--user --break-system-packages`, copies `getex.py` to
   `/usr/local/bin/getex`, prepares `~/.getex/firebase`). Keep it bash 3.2-compatible
   (macOS ships old bash): no associative arrays, no `${var^^}`.
-- **Sharing notes**: in the current single-workspace model, a second person sees the
-  owner's notes by using the same Firebase credential + logging in with the same
-  account (same `workspace_id`). Per-user membership of a shared workspace is the
-  future team phase.
+- **Sharing notes**: each person creates their **own account inside the shared
+  workspace** (using the workspace key) and sees that workspace's notes. They still
+  need the service-account credential (app-level auth uses the Admin SDK).
 
 ## Conventions
 
