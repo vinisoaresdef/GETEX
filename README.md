@@ -391,6 +391,7 @@ Abre um painel dividido: lista de arquivos à esquerda, preview à direita.
 | Tecla | Ação |
 |-------|------|
 | `↑` / `↓` ou `k` / `j` | Navegar entre arquivos |
+| `n` | **Criar uma nova nota** — pede o nome e abre o editor |
 | `Enter` | Abrir o arquivo selecionado no editor |
 | `c` | Mostrar/ocultar o **calendário** de filtro por data |
 | `←` / `→` ou `h` / `l` | Trocar de dia (com o calendário ativo); dias com arquivos ficam destacados |

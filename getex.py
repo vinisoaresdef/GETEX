@@ -1464,6 +1464,7 @@ class GetexEditor:
             "",
             "[ Navegador de Arquivos ]  (getex get all)",
             "  ↑ ↓  /  j k     Navegar pela lista de arquivos",
+            "  n               Criar uma nova nota (pede o nome e abre o editor)",
             "  Enter           Abrir o arquivo no editor",
             "  c               Mostrar/ocultar o calendário",
             "  ← →  /  h l     Trocar de dia (com calendário ativo)",
@@ -2061,7 +2062,7 @@ class FilesBrowser:
                     except curses.error:
                         pass
 
-        hints = " ↑↓ navegar │ c calendário │ r organizar IA │ s sincronizar │ d deletar │ Enter editar │ q sair "
+        hints = " ↑↓ navegar │ n nova │ c calendário │ r organizar IA │ s sync │ d deletar │ Enter editar │ q sair "
         try:
             self.stdscr.addstr(h - 2, 0, hints[:w].ljust(w - 1), curses.color_pair(5))
         except curses.error:
@@ -2198,6 +2199,42 @@ class FilesBrowser:
 
         curses.wrapper(_edit)
 
+    def prompt_new_name(self):
+        """Pede o nome da nova nota na base da tela. Retorna str ou None (Esc)."""
+        buf = ""
+        curses.curs_set(1)
+        while True:
+            h, w = self.stdscr.getmaxyx()
+            prompt = f" Nome da nova nota (Enter confirma, Esc cancela): {buf}"
+            try:
+                self.stdscr.addstr(h - 1, 0, prompt[:w].ljust(w - 1), curses.color_pair(2))
+                self.stdscr.move(h - 1, min(len(prompt), w - 1))
+            except curses.error:
+                pass
+            self.stdscr.refresh()
+            try:
+                k = self.stdscr.get_wch()
+            except curses.error:
+                continue
+            if is_enter(k):
+                break
+            elif is_esc(k):
+                buf = None
+                break
+            elif is_backspace(k):
+                buf = buf[:-1]
+            elif isinstance(k, str) and len(k) == 1 and ord(k) >= 32:
+                buf += k
+        curses.curs_set(0)
+        return buf
+
+    def open_new(self, title):
+        """Abre o editor com um buffer novo; ao salvar (:wq) vira DOC_..._<titulo>.txt."""
+        def _edit(stdscr):
+            ed = GetexEditor(stdscr, self.cfg, title=title)
+            return ed.run()
+        curses.wrapper(_edit)
+
     def run(self):
         while True:
             self.p_scroll = max(0, self.p_scroll)
@@ -2275,6 +2312,17 @@ class FilesBrowser:
                         _delete_local(fpath)
                         self.update_files_list()
                         self.p_scroll = 0
+            elif k in ("n", "N"):
+                before = {f[0] for f in self.all_files}
+                name = self.prompt_new_name()
+                if name and name.strip():
+                    self.open_new(name.strip())
+                    self.update_files_list()
+                    novos = [i for i, f in enumerate(self.files) if f[0] not in before]
+                    if novos:
+                        self.sel      = novos[0]
+                        self.v_scroll = 0
+                    self.p_scroll = 0
             elif k in ("r", "R"):
                 self.ai_organize()
                 self.p_scroll = 0
@@ -3062,6 +3110,7 @@ e integração com Inteligência Artificial.
 
 [ Navegador de Arquivos ] (getex get all)
   j / k  ou ↑ / ↓        Navegar pela lista de arquivos.
+  n                      Criar uma nova nota (pede o nome e abre o editor).
   Enter                  Abrir o arquivo selecionado no editor.
   c                      Exibir/Ocultar o Calendário de filtro de datas à direita.
   h / l  ou ← / →        Navegar entre os dias no Calendário para filtrar a lista.
