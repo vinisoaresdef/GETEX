@@ -3149,4 +3149,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        # Ctrl+C em qualquer tela (navegador, editor, menus): sai sem traceback.
+        # O curses.wrapper já restaurou o terminal ao propagar a exceção.
+        print("\nAté logo.\n")
+        sys.exit(0)
