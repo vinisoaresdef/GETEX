@@ -1,0 +1,7 @@
+# O getex e o servidor (server/) usam APENAS a biblioteca padrão do Python.
+# Em Linux/macOS não há nada para instalar — `pip install -r requirements.txt`
+# não baixa nada.
+#
+# No Windows o módulo `curses` não é nativo, então é preciso o windows-curses
+# (os instaladores install.sh/install.ps1 já cuidam disso automaticamente).
+windows-curses; sys_platform == "win32"
