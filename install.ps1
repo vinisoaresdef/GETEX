@@ -6,9 +6,10 @@
 
   O que faz:
     1. Encontra o Python 3.
-    2. Instala a dependencia windows-curses (curses no Windows).
-    3. Copia o getex.py para %LOCALAPPDATA%\getex e cria um atalho 'getex.bat'.
-    4. Adiciona essa pasta ao PATH do usuario.
+    2. Copia o getex.py para %LOCALAPPDATA%\getex e cria um atalho 'getex.bat'.
+    3. Adiciona essa pasta ao PATH do usuario.
+    4. Instala a dependencia windows-curses (curses no Windows). Se o pip falhar,
+       o getex ja fica instalado e o passo de curses pode ser refeito a mao.
 
   Login/sincronizacao funcionam direto, sem configurar nada: o getex ja vem
   apontando para o servidor na nuvem (getex.zina.dev.br). Para usar outro
@@ -39,17 +40,7 @@ if (-not $python) {
 $ver = (& $python --version)
 Say ("[OK] Python: " + $ver)
 
-# 2. Dependencia (apenas windows-curses) -------------------------------------
-Say "==> Instalando dependencia (windows-curses)..."
-try {
-    & $python -m pip install --user windows-curses
-    Say "[OK] Dependencia instalada"
-} catch {
-    Warn "[!] Falha ao instalar windows-curses automaticamente."
-    Warn ("    Rode manualmente: " + $python + " -m pip install --user windows-curses")
-}
-
-# 3. Instala o getex como comando -------------------------------------------
+# 2. Instala o getex como comando -------------------------------------------
 $dir = Join-Path $env:LOCALAPPDATA "getex"
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 
@@ -67,11 +58,43 @@ $batLines = @(
 Set-Content -Encoding ASCII -Path $bat -Value $batLines
 Say ("[OK] Comando 'getex' instalado em " + $dir)
 
-# 4. PATH do usuario ---------------------------------------------------------
+# 3. PATH do usuario ---------------------------------------------------------
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if ($userPath -notlike "*$dir*") {
     [Environment]::SetEnvironmentVariable("Path", "$userPath;$dir", "User")
     Warn "PATH atualizado -- ABRA UM NOVO terminal para o comando 'getex' funcionar."
+}
+
+# 4. windows-curses (tolerante a falha) --------------------------------------
+# O curses nao e nativo no Windows. Tentamos instalar, mas SEM abortar o
+# install caso o pip esteja com problema: o getex ja foi instalado acima.
+function Test-Curses {
+    & $python -c "import curses" 2>$null
+    return ($LASTEXITCODE -eq 0)
+}
+
+if (Test-Curses) {
+    Say "[OK] windows-curses ja disponivel"
+} else {
+    Say "==> Instalando dependencia (windows-curses)..."
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try { & $python -m pip install --user windows-curses 2>&1 | Out-Null } catch { }
+    if (-not (Test-Curses)) {
+        # fallback: sem --user
+        try { & $python -m pip install windows-curses 2>&1 | Out-Null } catch { }
+    }
+    $ErrorActionPreference = $prev
+
+    if (Test-Curses) {
+        Say "[OK] windows-curses instalado"
+    } else {
+        Warn "[!] Nao consegui instalar o windows-curses automaticamente (pip com problema?)."
+        Warn "    O comando 'getex' ja esta instalado; para o curses funcionar, rode:"
+        Warn "      python -m ensurepip --upgrade"
+        Warn "      python -m pip install --upgrade pip"
+        Warn "      python -m pip install --user windows-curses"
+    }
 }
 
 Write-Host ""
