@@ -536,83 +536,64 @@ def fb_is_real_user():
     u = _fb_state["user"]
     return bool(u and u.get("uid") and u.get("uid") != "local")
 
-# ─── Localização da credencial (service account) ────────────────────────────
-def find_credential():
-    """Procura o JSON do service account em vários locais conhecidos."""
-    env = os.environ.get("GETEX_FIREBASE_CRED")
-    if env and os.path.exists(os.path.expanduser(env)):
-        return os.path.expanduser(env)
-    candidates = []
-    if os.path.isdir(FB_CRED_DIR):
-        preferred = os.path.join(FB_CRED_DIR, "service-account.json")
-        if os.path.exists(preferred):
-            return preferred
-        candidates += [os.path.join(FB_CRED_DIR, f)
-                       for f in sorted(os.listdir(FB_CRED_DIR)) if f.endswith(".json")]
+# ─── Backend HTTP (instância OCI) ────────────────────────────────────────────
+# O getex agora fala com um servidor próprio (getex_server) em vez do Firebase.
+# A URL já vem embutida: quem clona o getex usa o backend na nuvem sem
+# configurar nada. Dá para apontar para outro servidor com GETEX_API_URL.
+API_URL = os.environ.get("GETEX_API_URL", "https://getex.zina.dev.br").rstrip("/")
+
+def _api(path, payload=None, auth=True, timeout=10):
+    """POST JSON para a API do getex. Retorna (dados, erro_str).
+
+    auth=True injeta o token da sessão automaticamente. Erros do servidor
+    (campo 'error') ou de rede viram a string de erro do segundo elemento."""
+    import urllib.request, urllib.error
+    body = dict(payload or {})
+    if auth:
+        tok = (_fb_state.get("user") or {}).get("token")
+        if not tok:
+            return None, "Sessão expirada — faça login novamente."
+        body["token"] = tok
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(API_URL + path, data=data, method="POST",
+                                 headers={"Content-Type": "application/json"})
     try:
-        here = os.path.dirname(os.path.abspath(__file__))
-        local_dir = os.path.join(here, "firebase")
-        if os.path.isdir(local_dir):
-            candidates += [os.path.join(local_dir, f)
-                           for f in sorted(os.listdir(local_dir)) if f.endswith(".json")]
-    except Exception:
-        pass
-    return candidates[0] if candidates else None
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            out = json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            return None, json.loads(e.read().decode("utf-8")).get("error", f"Erro {e.code}")
+        except Exception:
+            return None, f"Erro HTTP {e.code}"
+    except Exception as e:
+        return None, f"Sem conexão com o servidor ({str(e)[:40]})"
+    if isinstance(out, dict) and out.get("error"):
+        return None, out["error"]
+    return out, None
 
 def fb_init():
-    """Inicializa o Firebase Admin SDK + cliente Firestore. Retorna db ou None.
-
-    Importa firebase_admin de forma preguiçosa: se não houver credencial, nem
-    sequer tentamos importar (mantém a inicialização rápida em modo local)."""
-    cred_path = find_credential()
-    if not cred_path:
-        _fb_state["reason"] = "Sem credencial Firebase — modo local"
-        return None
-    try:
-        import firebase_admin
-        from firebase_admin import credentials, firestore
-    except Exception:
-        _fb_state["reason"] = "firebase-admin não instalado — modo local"
-        return None
-    try:
-        if not firebase_admin._apps:
-            firebase_admin.initialize_app(credentials.Certificate(cred_path))
-        _fb_state["db"] = firestore.client()
-        return _fb_state["db"]
-    except Exception as e:
-        _fb_state["reason"] = f"Falha ao iniciar Firebase: {e}"
-        return None
+    """Configura o backend HTTP. O endereço é fixo (API_URL), então não há mais
+    credencial nem service account: o 'db' é a própria URL da API."""
+    _fb_state["db"] = API_URL
+    _fb_state["reason"] = ""
+    return API_URL
 
 def check_online():
-    """Checagem rápida de conectividade (socket TCP até o Firestore)."""
-    if _fb_state["db"] is None:
-        _fb_state["online"] = False
-        return False
+    """Checagem rápida de conectividade: ping no /health do servidor."""
+    import urllib.request
     try:
-        s = socket.create_connection(("firestore.googleapis.com", 443), timeout=3)
-        s.close()
-        _fb_state["online"] = True
+        with urllib.request.urlopen(API_URL + "/health", timeout=4) as r:
+            _fb_state["online"] = (r.status == 200)
     except Exception:
         _fb_state["online"] = False
     return _fb_state["online"]
 
 def _friendly_fb_error(e):
-    msg = str(e)
-    if "SERVICE_DISABLED" in msg or "has not been used" in msg:
-        return "Firestore não habilitado no projeto. Ative no console do Firebase."
-    if "PERMISSION_DENIED" in msg:
-        return "Permissão negada no Firestore (verifique a credencial)."
-    return f"Erro Firestore: {msg[:60]}"
-
-def _where(coll, field, op, value):
-    """Filtro de consulta compatível com versões novas e antigas do SDK."""
-    try:
-        from google.cloud.firestore_v1.base_query import FieldFilter
-        return coll.where(filter=FieldFilter(field, op, value))
-    except Exception:
-        return coll.where(field, op, value)
+    return str(e)[:80] or "erro desconhecido"
 
 # ─── Senhas (PBKDF2-HMAC-SHA256) ─────────────────────────────────────────────
+# Mantido no cliente apenas para o LOGIN OFFLINE (verifica a senha contra o
+# salt+hash cacheados na sessão). Online, quem verifica é o servidor.
 def hash_password(password, salt=None):
     if salt is None:
         salt = secrets.token_hex(16)
@@ -654,90 +635,27 @@ def normalize_ws(name):
         # demais caracteres são descartados
     return "".join(out)[:64]
 
-def fb_find_workspace(db, wid):
-    snap = db.collection("workspaces").document(wid).get()
-    if snap.exists:
-        w = snap.to_dict()
-        w["id"] = wid
-        return w
-    return None
-
-def fb_find_user_in_ws(db, wid, email):
-    email = email.strip().lower()
-    coll = db.collection("workspaces").document(wid).collection("users")
-    for d in _where(coll, "email", "==", email).limit(1).stream():
-        u = d.to_dict()
-        u["uid"] = d.id
-        return u
-    return None
-
-def _session_from(u, wid, ws_name):
-    return {
-        "uid": u["uid"], "email": u["email"], "name": u.get("name", ""),
-        "workspace_id": wid, "workspace_name": ws_name,
-        "salt": u.get("salt", ""), "password_hash": u.get("password_hash", ""),
-    }
-
-def _create_user_doc(db, wid, email, password, name):
-    """Cria o documento de usuário dentro do workspace e devolve (uid, salt, hash)."""
-    salt, h = hash_password(password)
-    uid = uuid.uuid4().hex
-    nm  = name.strip() or email.split("@")[0]
-    db.collection("workspaces").document(wid).collection("users").document(uid).set({
-        "email": email, "name": nm, "salt": salt, "password_hash": h,
-        "created_at": time.time(),
-    })
-    return uid, salt, h, nm
-
 def fb_create_workspace(db, ws_name, email, password, name=""):
-    """Cria um NOVO workspace (o nome é a chave primária — não pode existir outro
-    igual) e a conta do criador, que vira o administrador. Sem chave de acesso."""
-    email = email.strip().lower()
-    wid   = normalize_ws(ws_name)
-    if not wid:
-        return None, "Informe um nome de workspace válido"
-    try:
-        if fb_find_workspace(db, wid) is not None:
-            return None, f"Workspace '{wid}' já existe — peça ao admin para te adicionar"
-        uid, salt, h, nm = _create_user_doc(db, wid, email, password, name)
-        db.collection("workspaces").document(wid).set({
-            "name": wid, "created_at": time.time(),
-            "created_by": email, "admin_uid": uid,
-        })
-        return _session_from({"uid": uid, "email": email, "name": nm,
-                              "salt": salt, "password_hash": h}, wid, wid), None
-    except Exception as e:
-        return None, _friendly_fb_error(e)
+    """Registra um NOVO workspace e a conta do criador (admin). O servidor faz o
+    hashing, garante a unicidade do nome e devolve a sessão (com token)."""
+    data, err = _api("/workspace/register",
+                     {"ws_name": ws_name, "email": email, "password": password, "name": name},
+                     auth=False)
+    return (data, None) if data else (None, err)
 
 def fb_add_member(db, wid, email, password, name=""):
-    """Ação do ADMIN: cria a conta de um usuário dentro de um workspace existente."""
-    email = email.strip().lower()
-    try:
-        if fb_find_workspace(db, wid) is None:
-            return None, "Workspace não encontrado"
-        if fb_find_user_in_ws(db, wid, email):
-            return None, "Email já cadastrado neste workspace"
-        _create_user_doc(db, wid, email, password, name)
-        return True, None
-    except Exception as e:
-        return None, _friendly_fb_error(e)
+    """Ação do ADMIN: cria a conta de um usuário no workspace atual. O servidor
+    valida, pelo token, que quem chama é o admin."""
+    data, err = _api("/member/add",
+                     {"wid": wid, "email": email, "password": password, "name": name})
+    return (True, None) if data else (None, err)
 
 def fb_login(db, ws_name, email, password):
-    wid = normalize_ws(ws_name)
-    if not wid:
-        return None, "Informe o workspace"
-    try:
-        ws = fb_find_workspace(db, wid)
-        if ws is None:
-            return None, "Workspace não encontrado"
-        u = fb_find_user_in_ws(db, wid, email)
-    except Exception as e:
-        return None, _friendly_fb_error(e)
-    if not u:
-        return None, "Usuário não encontrado neste workspace"
-    if not verify_password(password, u.get("salt", ""), u.get("password_hash", "")):
-        return None, "Senha incorreta"
-    return _session_from(u, wid, ws.get("name", wid)), None
+    """Login online: o servidor verifica a senha e devolve a sessão (com token)."""
+    data, err = _api("/login",
+                     {"ws_name": ws_name, "email": email, "password": password},
+                     auth=False)
+    return (data, None) if data else (None, err)
 
 def offline_login(ws_name, email, password):
     s = load_session()
@@ -753,41 +671,28 @@ def offline_login(ws_name, email, password):
 
 # ─── Gestão de conta / membros do workspace ──────────────────────────────────
 def fb_change_password(db, wid, uid, old_pw, new_pw):
-    """Verifica a senha atual e grava a nova. Retorna ((salt,hash), None) ou (False, erro)."""
-    try:
-        ref  = db.collection("workspaces").document(wid).collection("users").document(uid)
-        snap = ref.get()
-        if not snap.exists:
-            return False, "Conta não encontrada"
-        u = snap.to_dict()
-        if not verify_password(old_pw, u.get("salt", ""), u.get("password_hash", "")):
-            return False, "Senha atual incorreta"
-        salt, h = hash_password(new_pw)
-        ref.update({"salt": salt, "password_hash": h})
-        return (salt, h), None
-    except Exception as e:
-        return False, _friendly_fb_error(e)
+    """Troca a senha (o servidor identifica o usuário pelo token e confere a antiga).
+    Retorna ((salt,hash), None) ou (False, erro)."""
+    data, err = _api("/passwd", {"old_pw": old_pw, "new_pw": new_pw})
+    if not data:
+        return False, err
+    return (data["salt"], data["hash"]), None
 
 def fb_list_members(db, wid):
-    """Lista os usuários (membros) de um workspace."""
-    out = []
-    for d in db.collection("workspaces").document(wid).collection("users").stream():
-        u = d.to_dict()
-        out.append({"uid": d.id, "email": u.get("email", ""), "name": u.get("name", "")})
-    out.sort(key=lambda m: m["email"])
-    return out
+    """Lista os membros do workspace. Lança em caso de erro (o chamador trata)."""
+    data, err = _api("/member/list", {"wid": wid})
+    if not data:
+        raise RuntimeError(err)
+    return data.get("members", [])
 
 def fb_remove_member(db, wid, uid):
-    try:
-        db.collection("workspaces").document(wid).collection("users").document(uid).delete()
-        return True, None
-    except Exception as e:
-        return False, _friendly_fb_error(e)
+    data, err = _api("/member/remove", {"uid": uid})
+    return (True, None) if data else (False, err)
 
 def fb_workspace_creator(db, wid):
-    """Email de quem criou o workspace (é o 'admin' que pode remover membros)."""
-    ws = fb_find_workspace(db, wid)
-    return (ws or {}).get("created_by", "")
+    """Email de quem criou o workspace (o admin)."""
+    data, _ = _api("/workspace/info", {"wid": wid})
+    return (data or {}).get("created_by", "")
 
 # ─── Sessão local ────────────────────────────────────────────────────────────
 def save_session(user):
@@ -872,19 +777,25 @@ def fb_push_note(db, filepath):
     except Exception:
         return False
     marks = load_marks(filepath)
-    db.collection("notes").document(meta["id"]).set({
-        "filename":     os.path.basename(filepath),
-        "title":        os.path.basename(filepath),
-        "content":      content,
-        "marks":        {str(k): v for k, v in marks.items()},
-        "workspace_id": meta["workspace_id"],
-        "owner_uid":    meta["owner_uid"],
-        "updated_at":   meta["updated_at"],
-        "deleted":      meta.get("deleted", False),
+    data, err = _api("/notes/push", {
+        "id":         meta["id"],
+        "filename":   os.path.basename(filepath),
+        "title":      os.path.basename(filepath),
+        "content":    content,
+        "marks":      {str(k): v for k, v in marks.items()},
+        "updated_at": meta["updated_at"],
+        "deleted":    meta.get("deleted", False),
     })
+    if not data:
+        return False
     meta["dirty"] = False
     save_sidecar(filepath, meta)
     return True
+
+def fb_delete_note(note_id):
+    """Marca a nota como excluída no servidor (tombstone). Retorna True/False."""
+    data, _ = _api("/notes/delete", {"id": note_id})
+    return bool(data)
 
 def _norm_ts(v):
     """Converte timestamp do Firestore (ou epoch) em float comparável."""
@@ -932,10 +843,14 @@ def fb_pull_notes(db, user, folder):
             m = load_sidecar(fp)
             if m and m.get("id"):
                 local_by_id[m["id"]] = (fp, m)
+    resp, err = _api("/notes/pull", {})
+    if not resp:
+        raise RuntimeError(err)
     pulled = 0
-    for d in _where(db.collection("notes"), "workspace_id", "==", wid).stream():
-        data = d.to_dict()
-        nid  = d.id
+    for data in resp.get("notes", []):
+        nid = data.get("id")
+        if not nid:
+            continue
         if data.get("deleted"):
             if nid in local_by_id:
                 _delete_local(local_by_id[nid][0])
@@ -980,12 +895,8 @@ def flush_tombstones(db):
     if not t:
         return
     for nid in list(t.keys()):
-        try:
-            db.collection("notes").document(nid).set(
-                {"deleted": True, "updated_at": time.time()}, merge=True)
+        if fb_delete_note(nid):
             del t[nid]
-        except Exception:
-            pass
     try:
         with open(TOMBSTONE_FILE, "w") as f:
             json.dump(t, f)
@@ -2368,14 +2279,8 @@ class FilesBrowser:
                     if self.confirm_delete(fname):
                         meta = load_sidecar(fpath)
                         if meta and meta.get("id"):
-                            # propaga a exclusão para o Firestore (ou enfileira)
-                            if fb_is_online():
-                                try:
-                                    fb_db().collection("notes").document(meta["id"]).set(
-                                        {"deleted": True, "updated_at": time.time()}, merge=True)
-                                except Exception:
-                                    add_tombstone(meta["id"], meta.get("workspace_id"))
-                            else:
+                            # propaga a exclusão para o servidor (ou enfileira tombstone)
+                            if not (fb_is_online() and fb_delete_note(meta["id"])):
                                 add_tombstone(meta["id"], meta.get("workspace_id"))
                         _delete_local(fpath)
                         self.update_files_list()
@@ -3202,15 +3107,15 @@ def main():
 
     os.makedirs(os.path.join(desktop_dir(), cfg['folder_name']), exist_ok=True)
 
-    # ── Firebase: init + login ───────────────────────────────────────────────
-    # Fluxo: sessão salva → entra direto (auto-resume); sem sessão e Firebase
-    # configurado → tela de login; Firebase ausente → modo local (sem gate).
+    # ── Backend (instância OCI): init + login ────────────────────────────────
+    # Fluxo: sessão salva → entra direto (auto-resume); online sem sessão →
+    # tela de login; offline e sem sessão → modo local (sem gate).
     fb_init()
     online  = check_online()
     session = load_session()
     if session:
         _fb_state["user"] = session
-    elif fb_db() is None:
+    elif not online:
         _fb_state["user"] = LOCAL_GUEST
     else:
         def _login(stdscr):

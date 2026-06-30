@@ -1,0 +1,32 @@
+services:
+  getex-api:
+    image: python:3.12-slim
+    container_name: getex-api
+    restart: unless-stopped
+    working_dir: /app
+    command: python /app/getex_server.py
+    environment:
+      - GETEX_DB=/data/getex.db
+      - GETEX_PORT=8090
+      - TZ=America/Sao_Paulo
+    volumes:
+      - ./getex_server.py:/app/getex_server.py:ro
+      - /data/getex/data:/data
+    networks:
+      - coolify
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=coolify
+      - traefik.http.routers.getex-http.entrypoints=http
+      - traefik.http.routers.getex-http.rule=Host(`getex.zina.dev.br`)
+      - traefik.http.middlewares.getex-redirect.redirectscheme.scheme=https
+      - traefik.http.routers.getex-http.middlewares=getex-redirect
+      - traefik.http.routers.getex.entrypoints=https
+      - traefik.http.routers.getex.rule=Host(`getex.zina.dev.br`)
+      - traefik.http.routers.getex.tls=true
+      - traefik.http.routers.getex.tls.certresolver=letsencrypt
+      - traefik.http.services.getex.loadbalancer.server.port=8090
+
+networks:
+  coolify:
+    external: true

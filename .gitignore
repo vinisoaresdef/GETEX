@@ -8,6 +8,9 @@ service-account*.json
 *.sync.json
 *.marks
 
+# Banco do servidor (quando rodado a partir do repo)
+server/getex.db*
+
 # Python
 __pycache__/
 *.pyc
