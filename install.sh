@@ -6,10 +6,11 @@
 #
 # O que faz:
 #   1. Verifica o Python 3.
-#   2. Instala o firebase-admin (opcional — para login/sincronização).
-#   3. Copia o getex.py para /usr/local/bin/getex e o torna executável.
-#   4. Prepara ~/.getex/firebase para a credencial do Firebase.
+#   2. Copia o getex.py para /usr/local/bin/getex e o torna executável.
 #
+# Login/sincronização funcionam direto, sem configurar nada: o getex já vem
+# apontando para o servidor na nuvem (getex.zina.dev.br). Para usar outro
+# servidor, exporte GETEX_API_URL antes de rodar o getex.
 set -e
 
 GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'; RED=$'\033[0;31m'; NC=$'\033[0m'
@@ -31,25 +32,9 @@ if ! command -v python3 >/dev/null 2>&1; then
     exit 1
 fi
 say "✓ $(python3 --version)"
+say "  (sem dependências: o getex usa só a biblioteca padrão do Python)"
 
-# ── 2. firebase-admin (opcional) ─────────────────────────────────────────────
-say "==> Instalando firebase-admin (para login/sincronização)..."
-if python3 -c "import firebase_admin" >/dev/null 2>&1; then
-    say "✓ firebase-admin já instalado"
-else
-    if python3 -m pip install --user firebase-admin >/dev/null 2>&1; then
-        say "✓ firebase-admin instalado"
-    elif python3 -m pip install --user --break-system-packages firebase-admin >/dev/null 2>&1; then
-        say "✓ firebase-admin instalado (--break-system-packages)"
-    else
-        warn "⚠ Não consegui instalar o firebase-admin automaticamente."
-        warn "  O getex vai funcionar em MODO LOCAL (sem login/sync)."
-        warn "  Para habilitar a nuvem, rode manualmente:"
-        warn "    python3 -m pip install --user firebase-admin"
-    fi
-fi
-
-# ── 3. Localiza o getex.py e instala como comando global ─────────────────────
+# ── 2. Localiza o getex.py e instala como comando global ─────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 SRC=""
 for cand in "$SCRIPT_DIR/getex.py" "$SCRIPT_DIR/getex" "./getex.py" "./getex"; do
@@ -70,20 +55,7 @@ else
 fi
 say "✓ Comando 'getex' instalado"
 
-# ── 4. Pasta da credencial do Firebase ───────────────────────────────────────
-mkdir -p "$HOME/.getex/firebase"
-chmod 700 "$HOME/.getex" "$HOME/.getex/firebase" 2>/dev/null || true
-CRED="$HOME/.getex/firebase/service-account.json"
-echo
-if [ -f "$CRED" ]; then
-    say "✓ Credencial Firebase já presente em $CRED"
-else
-    warn "Para login e sincronização na nuvem, coloque a credencial do Firebase em:"
-    warn "    $CRED"
-    warn "Peça esse arquivo (service-account.json) ao dono do projeto e rode:"
-    warn "    chmod 600 $CRED"
-fi
-
 echo
 say "Pronto! Abra o editor com:  getex"
 say "Navegador de arquivos:      getex get all"
+say "No primeiro uso com internet, crie sua conta na tela de login (workspace/email/senha)."

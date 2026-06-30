@@ -6,10 +6,13 @@
 
   O que faz:
     1. Encontra o Python 3.
-    2. Instala as dependencias: windows-curses (curses no Windows) e firebase-admin.
+    2. Instala a dependencia windows-curses (curses no Windows).
     3. Copia o getex.py para %LOCALAPPDATA%\getex e cria um atalho 'getex.bat'.
     4. Adiciona essa pasta ao PATH do usuario.
-    5. Prepara a pasta da credencial do Firebase.
+
+  Login/sincronizacao funcionam direto, sem configurar nada: o getex ja vem
+  apontando para o servidor na nuvem (getex.zina.dev.br). Para usar outro
+  servidor, defina a variavel de ambiente GETEX_API_URL.
 
   Observacao: este arquivo e mantido em ASCII puro de proposito, para o
   Windows PowerShell 5.1 (que le scripts como ANSI por padrao) nao corromper
@@ -36,14 +39,14 @@ if (-not $python) {
 $ver = (& $python --version)
 Say ("[OK] Python: " + $ver)
 
-# 2. Dependencias ------------------------------------------------------------
-Say "==> Instalando dependencias (windows-curses, firebase-admin)..."
+# 2. Dependencia (apenas windows-curses) -------------------------------------
+Say "==> Instalando dependencia (windows-curses)..."
 try {
-    & $python -m pip install --user windows-curses firebase-admin
-    Say "[OK] Dependencias instaladas"
+    & $python -m pip install --user windows-curses
+    Say "[OK] Dependencia instalada"
 } catch {
-    Warn "[!] Falha ao instalar dependencias automaticamente."
-    Warn ("    Rode manualmente: " + $python + " -m pip install --user windows-curses firebase-admin")
+    Warn "[!] Falha ao instalar windows-curses automaticamente."
+    Warn ("    Rode manualmente: " + $python + " -m pip install --user windows-curses")
 }
 
 # 3. Instala o getex como comando -------------------------------------------
@@ -71,18 +74,7 @@ if ($userPath -notlike "*$dir*") {
     Warn "PATH atualizado -- ABRA UM NOVO terminal para o comando 'getex' funcionar."
 }
 
-# 5. Pasta da credencial -----------------------------------------------------
-$cred = Join-Path $env:USERPROFILE ".getex\firebase"
-New-Item -ItemType Directory -Force -Path $cred | Out-Null
-$credFile = Join-Path $cred "service-account.json"
-if (Test-Path $credFile) {
-    Say "[OK] Credencial Firebase ja presente"
-} else {
-    Warn "Para login/sincronizacao, coloque a credencial do Firebase em:"
-    Warn ("    " + $credFile)
-    Warn "(peca o arquivo service-account.json ao dono do projeto)"
-}
-
 Write-Host ""
 Say "Pronto! Abra um NOVO terminal e rode:  getex"
 Say "Navegador de arquivos:                 getex get all"
+Say "No primeiro uso com internet, crie sua conta na tela de login (workspace/email/senha)."
