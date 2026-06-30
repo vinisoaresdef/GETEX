@@ -1,6 +1,6 @@
 # getex
 
-Editor de texto modal para terminal Linux, inspirado no Vim. Salva documentos organizados por data na sua Área de Trabalho, tem integração com IA (Google Gemini ou OpenAI) e **sincronização opcional com o Firebase** (login por email/senha, funcionando online e offline).
+Editor de texto modal para terminal Linux, inspirado no Vim. Salva documentos organizados por data na sua Área de Trabalho, tem integração com IA (Google Gemini ou OpenAI) e **sincronização na nuvem** (login por email/senha, funcionando online e offline) — sem precisar configurar nada.
 
 ---
 
@@ -22,7 +22,9 @@ Baixe o repositório (ou os arquivos `getex.py` + o instalador, lado a lado).
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-Os instaladores verificam o Python 3, instalam as dependências (no Windows também o `windows-curses`), instalam o comando `getex` e preparam a pasta da credencial. Depois é só abrir um **novo** terminal e rodar `getex`.
+Os instaladores verificam o Python 3, instalam o comando `getex` (no Windows também o pacote `windows-curses`) e pronto. Depois é só abrir um **novo** terminal e rodar `getex`. A sincronização na nuvem funciona de imediato, sem configuração.
+
+> Já usa o getex? Atualize para a versão mais recente com `./update.sh` (Linux/macOS) ou `.\update.ps1` (Windows).
 
 ## Instalação manual
 
@@ -83,22 +85,7 @@ python3 --version   # precisa ser 3.6 ou superior
 pip install --user windows-curses
 ```
 
-Para a **sincronização com o Firebase** (opcional), instale o SDK Admin:
-
-```bash
-# Linux (e macOS com Homebrew Python)
-pip3 install --user --break-system-packages firebase-admin
-
-# Se a sua instalação aceitar sem a flag, este também serve:
-pip3 install --user firebase-admin
-```
-
-```powershell
-# Windows
-pip install --user firebase-admin
-```
-
-> O `getex` funciona 100% offline sem essa dependência — ela só é necessária para login e sincronização na nuvem. A flag `--break-system-packages` é exigida quando o Python é "externally-managed" (Ubuntu 23.04+ e Homebrew Python no macOS); a instalação `--user` vai para a sua pasta de usuário e não altera os pacotes do sistema. O `./install.sh` já tenta os dois automaticamente.
+> A **sincronização na nuvem** não exige dependência nenhuma: o getex usa só a biblioteca padrão do Python para falar com o servidor. Fora o `windows-curses` no Windows, não há nada para instalar.
 
 ---
 
@@ -120,18 +107,18 @@ As respostas ficam salvas em `~/.getex_config` (arquivo JSON editável). Você p
 
 ---
 
-## Sincronização com o Firebase (nuvem)
+## Sincronização na nuvem
 
-O getex pode guardar suas notas no **Cloud Firestore** e sincronizá-las entre máquinas, com **login por email e senha**. Tudo funciona **offline**: quando não há internet, você edita normalmente e as mudanças sobem assim que a conexão volta.
+O getex guarda suas notas em um **servidor próprio na nuvem** e as sincroniza entre máquinas, com **login por email e senha**. Tudo funciona **offline**: quando não há internet, você edita normalmente e as mudanças sobem assim que a conexão volta.
 
-> Se o Firebase não estiver configurado, o getex roda em **modo local** (como sempre funcionou), sem pedir login.
+> **Zero configuração:** o getex já vem apontando para o servidor oficial (`getex.zina.dev.br`). Quem clona e instala já tem acesso — basta criar uma conta na tela de login. Não há credencial nem arquivo de projeto para configurar.
 
 ### Como funciona
 
 - As notas continuam sendo arquivos `.txt` na sua Área de Trabalho (continuam editáveis offline), agora separadas por workspace em `~/Desktop/<pasta>/<WORKSPACE>/`.
 - Cada nota ganha um sidecar `NOME.txt.sync.json` com metadados de sincronização.
-- **Online:** o getex empurra as notas alteradas e puxa as do seu workspace no Firestore.
-- **Offline:** as mudanças ficam pendentes e sobem no próximo `:sync` (ou na próxima abertura online).
+- **Online:** o getex empurra as notas alteradas e puxa as do seu workspace do servidor.
+- **Offline:** as mudanças ficam pendentes e sobem no próximo `:sync` (ou na próxima abertura online). Se você estiver sem internet no primeiro uso e ainda não tiver uma sessão salva, o getex roda em **modo local**, sem pedir login.
 - **Conflitos:** vence a versão mais recente (last-write-wins por horário de edição).
 
 ### Workspaces
@@ -144,26 +131,13 @@ As notas pertencem a um **workspace**, e cada pessoa tem uma conta **dentro** de
 - **A mesma pessoa pode ter contas em workspaces diferentes** (logins separados). Para trocar de workspace, use `:logout` e entre no outro.
 - O nome do workspace é normalizado para maiúsculas (`umti` → `UMTI`).
 
-### Configuração (uma vez)
+### Configuração
 
-1. No [console do Firebase](https://console.firebase.google.com/), crie o banco **Cloud Firestore** (modo Production/Native, escolha uma região).
-2. Em **Configurações do projeto → Contas de serviço**, gere uma chave privada (JSON do *service account*).
-3. Coloque o arquivo em:
-
-   ```bash
-   mkdir -p ~/.getex/firebase
-   mv ~/Downloads/seu-service-account.json ~/.getex/firebase/service-account.json
-   chmod 600 ~/.getex/firebase/service-account.json
-   ```
-
-   > O getex também aceita o caminho via variável `GETEX_FIREBASE_CRED`.
-   > **Nunca** versione esse arquivo — ele dá acesso total ao banco.
-
-4. Instale o SDK: `pip install --user --break-system-packages firebase-admin`.
+Nenhuma. O servidor já vem embutido no getex. Para apontar para **outro** servidor (self-host), defina a variável de ambiente `GETEX_API_URL` antes de rodar o getex — o código do servidor está em [`server/`](server/).
 
 ### Login e cadastro
 
-Ao abrir o `getex` com o Firebase configurado, aparece a **tela de login**:
+Ao abrir o `getex` com internet, aparece a **tela de login**:
 
 - **Entrar:** informe **Workspace**, **Email** e **Senha** e pressione `Enter`.
 - **Criar workspace:** pressione `F2` para alternar para o modo de criação (**Workspace / Nome / Email / Senha**) e `Enter`.
@@ -176,16 +150,16 @@ Ao abrir o `getex` com o Firebase configurado, aparece a **tela de login**:
 
 | Onde | Comando | Ação |
 |------|---------|------|
-| Editor | `:sync` | Sincroniza agora com o Firebase |
+| Editor | `:sync` | Sincroniza agora com o servidor |
 | Editor | `:whoami` | Mostra o usuário/workspace e o status (online/offline) |
 | Editor | `:account` | Conta: trocar senha, ver/remover membros do workspace |
 | Editor | `:passwd` | Troca a sua senha |
 | Editor | `:logout` | Encerra a sessão |
-| Navegador | `s` | Sincroniza a lista com o Firebase |
+| Navegador | `s` | Sincroniza a lista com o servidor |
 
 ### Conta e membros do workspace (`:account`)
 
-- **Trocar senha** (`:passwd` ou pelo menu `:account`): pede a senha atual e a nova. Atualiza no Firebase e na sessão local.
+- **Trocar senha** (`:passwd` ou pelo menu `:account`): pede a senha atual e a nova. Atualiza no servidor e na sessão local.
 - **Ver membros**: lista quem tem conta no workspace atual.
 
 Para o **administrador** do workspace (quem o criou), aparecem também:
@@ -195,20 +169,20 @@ Para o **administrador** do workspace (quem o criou), aparecem também:
 
 > Não há recuperação de senha esquecida — apenas troca autenticada. Se um membro esquecer a senha, o admin pode removê-lo e adicioná-lo de novo.
 
-> ⚠️ **Segurança:** o *service account* ignora as regras do Firestore (acesso total), então o isolamento entre workspaces é garantido pela aplicação, não pelo banco. É adequado para uma equipe de confiança. O isolamento garantido pelo próprio banco (autenticação Firebase real + regras de segurança, ou um backend) é um endurecimento futuro.
+> ⚠️ **Segurança:** o login é por **workspace + email + senha**, verificada **no servidor** (PBKDF2); o hash da senha nunca sai do servidor. Cada login emite um **token de sessão**, exigido para sincronizar notas e para as ações de admin — então não dá para ler as notas de um workspace nem cadastrar membros sem credenciais válidas. O tráfego é por **HTTPS**. O isolamento entre workspaces é aplicado pela camada de aplicação no servidor, adequado para uma equipe de confiança.
 
 ### Dar acesso a um colega de equipe (ex.: um dev no Mac)
 
 Não se compartilha senha: o **admin cadastra** o colega no workspace. Passo a passo para dar acesso ao `UMTI`:
 
-1. O colega **baixa** o `getex.py` e o `install.sh` (lado a lado), roda `./install.sh` e coloca o `service-account.json` em `~/.getex/firebase/` (você envia esse arquivo a ele).
+1. O colega **baixa** o `getex.py` e o `install.sh` (lado a lado) e roda `./install.sh`. Não precisa de credencial nenhuma — o getex já fala com o servidor.
 2. **Você (admin)**, dentro do `UMTI`, abre `:account` → **Adicionar usuário** e cria a conta dele (email + senha inicial).
 3. Você passa a ele o **email e a senha inicial**.
 4. O colega abre `getex` e faz **login**: Workspace = `UMTI`, mais o email/senha que você definiu. Depois ele troca a senha com `:passwd`.
 
 Pronto: ele vê as notas do `UMTI`; as edições dele sobem e aparecem para você após um `:sync`. O seu workspace `PESSOAL` continua invisível para ele (ele não tem conta lá).
 
-> 🔒 Você compartilha apenas a **credencial do projeto** (`service-account.json`) — nunca a sua senha. O acesso ao workspace é controlado por quem o admin cadastra.
+> 🔒 Você nunca compartilha senha nem credencial. O acesso ao workspace é controlado por quem o admin cadastra; cada um define e troca a própria senha.
 
 ---
 
@@ -333,7 +307,7 @@ No modo comando, pressione `:` para abrir o prompt. Digite o comando e pressione
 | `:set key SUACHAVE` | Define a chave de API sem sair do editor |
 | `:config` | Abre o menu de configurações (pasta, tema, IA, chave) |
 | `:theme` | Abre o menu de troca de tema de cores |
-| `:sync` | Sincroniza as notas com o Firebase (quando online) |
+| `:sync` | Sincroniza as notas com o servidor (quando online) |
 | `:whoami` | Mostra o usuário logado e o status de conexão |
 | `:logout` | Encerra a sessão atual |
 | `:help` | Mostra a lista completa de comandos dentro do editor |
@@ -422,7 +396,7 @@ Abre um painel dividido: lista de arquivos à esquerda, preview à direita.
 | `c` | Mostrar/ocultar o **calendário** de filtro por data |
 | `←` / `→` ou `h` / `l` | Trocar de dia (com o calendário ativo); dias com arquivos ficam destacados |
 | `r` | **Reorganizar o arquivo com IA** (reestrutura e sobrescreve o documento) |
-| `s` | **Sincronizar** a lista com o Firebase |
+| `s` | **Sincronizar** a lista com o servidor |
 | `PgUp` / `PgDn` | Rolar o preview sem trocar de arquivo |
 | `Home` / `End` | Ir ao início / fim do preview |
 | `d` | Deletar o arquivo selecionado (pede confirmação `s/n`) — a exclusão também é propagada para a nuvem |

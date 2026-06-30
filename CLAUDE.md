@@ -92,62 +92,65 @@ If you add any new code path that mutates `self.lines` length, you **must** call
 appropriate helper or marks will desync. Marks are persisted next to the document in
 a parallel `<file>.txt.marks` JSON file (`load_marks` / `save_marks`).
 
-### Firebase / sync / auth
+### Backend / sync / auth
 
-Optional cloud layer (degrades to local-only if absent). Lives in the
-`# FIREBASE` section of `getex`.
+Cloud layer: the client talks to a small HTTP API (`server/getex_server.py`), **not
+Firebase anymore**. It lives in the `# FIREBASE` section of `getex.py` — the functions
+kept their historical `fb_*` names (and the `_fb_state` dict) to keep the diff small, but
+they now make HTTP calls through the `_api()` helper instead of Firestore.
 
-- **Dependency**: `firebase-admin` (Admin SDK). Imported lazily inside `fb_init()`
-  only when a credential is found, so local-only startup stays fast. Installed with
-  `pip install --user --break-system-packages firebase-admin` (PEP 668 environment).
-- **Credential**: service-account JSON, discovered by `find_credential()` from
-  `$GETEX_FIREBASE_CRED`, `~/.getex/firebase/service-account.json`, or a `firebase/`
-  dir next to the script. **Never commit it** (see `.gitignore`).
-- **Global state**: `_fb_state` dict (db, user, online, reason) with accessors
-  `fb_db()`, `fb_user()`, `fb_is_online()`, `fb_is_real_user()`, `fb_status_tag()`.
-  This avoids threading db/user through every curses constructor.
-- **Auth model — workspace-scoped accounts** (app-level, not Firebase Auth; only a
-  service account is available, no Web API key). A login is **(workspace, email,
-  password)**: the same email can have independent accounts in different workspaces.
-  Firestore layout:
-  - `workspaces/{WID}` — `{name, created_at, created_by, admin_uid}`. **`WID` =
-    `normalize_ws(name)` is the primary key** (uppercase, alnum/`_`, ≤64): a name is
-    globally unique, so there are **no access keys**. Privacy of `PESSOAL`/`UMTI`
-    comes from the fact that you can't join an existing workspace yourself — only its
-    admin adds you.
-  - `workspaces/{WID}/users/{uid}` — `{email, name, salt, password_hash, created_at}`.
-  - `notes/{id}` — `{workspace_id: WID, owner_uid, author_email, filename, content,
-    marks, updated_at, deleted}`.
-  Functions: `normalize_ws`, `fb_find_workspace`, `fb_find_user_in_ws`,
-  `fb_create_workspace` (register = create a NEW workspace; fails if the name exists;
-  the creator becomes admin via `created_by`/`admin_uid`), `fb_add_member` (admin
-  provisions a user), `fb_login`, `offline_login` (matches cached workspace+email).
+- **No dependency, no credential**: pure stdlib (`urllib`). The server URL is built in
+  (`API_URL`, default `https://getex.zina.dev.br`, override with `GETEX_API_URL`), so
+  anyone who clones gets cloud sync with zero config. `fb_init()` just sets the URL;
+  `check_online()` pings `/health`.
+- **Global state**: `_fb_state` dict (`db`=API_URL, `user`, `online`, `reason`) with
+  accessors `fb_db()`, `fb_user()`, `fb_is_online()`, `fb_is_real_user()`,
+  `fb_status_tag()`. Avoids threading db/user through every curses constructor.
+- **Auth model — workspace-scoped accounts** (app-level). A login is **(workspace, email,
+  password)**; the same email can have independent accounts in different workspaces. The
+  password is verified **server-side** (PBKDF2) and the server returns a **session token**
+  (cached in the session) that authenticates note sync and admin actions. The salt+hash
+  are returned only to the owner after a successful login, so **offline login** still
+  works against the cached values (`offline_login`).
+- **Server (`server/getex_server.py`)** — stdlib `http.server` + `sqlite3`, no pip deps.
+  SQLite tables: `workspaces(wid,name,created_at,created_by,admin_uid)`,
+  `users(uid,wid,email,name,salt,password_hash,created_at)`,
+  `notes(id,wid,owner_uid,author_email,filename,title,content,marks,updated_at,deleted)`,
+  `sessions(token,uid,wid,created_at)`. **`WID = normalize_ws(name)` is the primary key**
+  (uppercase, alnum/`_`, ≤64), globally unique → **no access keys**: you can't join an
+  existing workspace yourself, only its admin adds you. Endpoints: `/health`,
+  `/workspace/register`, `/login`, `/workspace/info`, `/member/add|list|remove`,
+  `/passwd`, `/notes/pull|push|delete`. Deployed as the `getex-api` Docker container
+  (`server/docker-compose.yml`) behind Traefik (auto-HTTPS), DB volume at `/data/getex`.
+  `server/test_server.py` is the end-to-end self-check (run it after server changes).
+- **Client functions**: `fb_create_workspace`, `fb_add_member`, `fb_login`,
+  `offline_login`, `fb_change_password`, `fb_list_members`, `fb_remove_member`,
+  `fb_workspace_creator`, `fb_push_note`, `fb_pull_notes`, `fb_delete_note`, `sync_notes`.
   `LoginScreen`: login = workspace/email/password; register = workspace/name/email/
-  password (creates a new workspace). Session cached in `~/.getex/session.json`
-  (chmod 600); `main()` auto-resumes it, else shows login, else `LOCAL_GUEST`.
+  password (creates a new workspace, creator becomes admin). Session cached in
+  `~/.getex/session.json` (chmod 600, **now includes the token**); `main()` auto-resumes
+  it, else (online) shows login, else `LOCAL_GUEST` (offline with no session).
 - **Local storage is workspace-scoped**: `active_folder(cfg)` returns
-  `~/Desktop/<folder>/<WID>/` for a real user (so each workspace's `.txt` notes are
-  isolated on disk) and `~/Desktop/<folder>/` for the local guest. `build_filepath`,
-  `list_docs`, and every sync call go through it.
+  `~/Desktop/<folder>/<WID>/` for a real user (each workspace's `.txt` notes isolated on
+  disk) and `~/Desktop/<folder>/` for the local guest. `build_filepath`, `list_docs`,
+  and every sync call go through it.
 - **Sync model**: notes stay as `.txt` files; each gets a sidecar
   `<file>.txt.sync.json` = `{id, workspace_id, owner_uid, updated_at, dirty, deleted}`.
   `sync_notes(folder)` pushes dirty notes then pulls the workspace's notes
   (last-write-wins by `updated_at`). Saving marks dirty (`mark_note_dirty`) and
-  best-effort pushes (`push_note_if_online`). Offline deletes are queued as
-  tombstones in `~/.getex/sync/tombstones.json`.
-- **Account/member management** (`AccountMenu`, curses): `:account` opens it,
-  `:passwd` jumps straight to password change. Trocar senha verifies the old password
-  and updates `workspaces/{WID}/users/{uid}` + the local session. The workspace
-  **creator** (`workspaces/{WID}.created_by`) is the admin and can **add** users
-  (`fb_add_member`) and **remove** them (`fb_remove_member`); can't remove self or the
-  creator. There is no password *reset* (forgot-password) flow — only authenticated
-  change; a member who forgets is removed and re-added by the admin.
+  best-effort pushes (`push_note_if_online`). Offline deletes are queued as tombstones in
+  `~/.getex/sync/tombstones.json`, flushed via `/notes/delete`.
+- **Account/member management** (`AccountMenu`, curses): `:account` opens it, `:passwd`
+  jumps straight to password change. The workspace **creator** is the admin and can
+  **add** (`fb_add_member`) and **remove** (`fb_remove_member`) users; can't remove self
+  or the creator. No password *reset* (forgot-password) — only authenticated change; a
+  member who forgets is removed and re-added by the admin.
 - Editor commands: `:sync`, `:whoami`, `:logout`, `:account`, `:passwd`. Browser: `s`
   to sync. Switch workspace = `:logout` then log into another one.
-- **Security caveat**: the service account bypasses Firestore rules (full access), so
-  workspace isolation is enforced at the app layer, not by the DB. Adequate for a
-  trusted team now; real isolation needs Firebase Auth + security rules (or a backend)
-  — a later hardening step.
+- **Security**: the server verifies passwords (PBKDF2, hash never leaves the server) and
+  the session token gates note sync + admin actions; traffic is over HTTPS. Workspace
+  isolation is enforced in the server's app layer (the server has full DB access),
+  adequate for a trusted team.
 
 ### Cross-platform (Linux + macOS + Windows)
 
@@ -167,15 +170,16 @@ print a friendly install hint and exit on Windows if it's missing.
 - macOS Terminal/iTerm (and Windows consoles) often intercept `F2`/`F3` (need `Fn`),
   so command mode also accepts **`2`/`3`** as aliases for the green/red marks. Keep
   both wired together.
-- **Installers**: `install.sh` (Linux/macOS, bash 3.2-compatible — no associative
-  arrays/`${var^^}`) and `install.ps1` (Windows/PowerShell — installs
-  `windows-curses`+`firebase-admin`, copies `getex.py` to `%LOCALAPPDATA%\getex`,
-  writes a `getex.bat` shim, adds it to the user PATH). Keep both in sync with the
-  install docs in `README.md`.
-- **Sharing notes**: the workspace **admin adds each teammate** (`:account` → add
-  user), setting their initial email/password. The teammate logs in with workspace +
-  email + password and sees that workspace's notes. They still need the
-  service-account credential (app-level auth uses the Admin SDK).
+- **Installers / updater**: `install.sh` (Linux/macOS, bash 3.2-compatible — no
+  associative arrays/`${var^^}`) and `install.ps1` (Windows/PowerShell — installs
+  `windows-curses`, copies `getex.py` to `%LOCALAPPDATA%\getex`, writes a `getex.bat`
+  shim, adds it to the user PATH). No cloud deps to install anymore. `update.sh` /
+  `update.ps1` pull the latest `getex.py` (git pull inside a clone, else download the raw
+  file from GitHub + `py_compile` sanity check). Keep all in sync with `README.md`.
+- **Sharing notes**: the workspace **admin adds each teammate** (`:account` → add user),
+  setting their initial email/password. The teammate just installs getex (no credential —
+  the server URL is built in), logs in with workspace + email + password, and sees that
+  workspace's notes.
 
 ## Conventions
 
