@@ -37,17 +37,35 @@ $dir  = Join-Path $env:LOCALAPPDATA "getex"
 $dest = Join-Path $dir "getex.py"
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 
+# Roda um comando nativo (git/python) sem que o stderr vire erro fatal --
+# pegadinha do PowerShell com $ErrorActionPreference='Stop'. Mostra a saida e
+# devolve o exit code. Use -Quiet para suprimir a saida (deteccoes).
+function Invoke-Native {
+    param([string[]]$Cmd, [switch]$Quiet)
+    $old = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $rest = @($Cmd[1..($Cmd.Count - 1)])
+    if ($Quiet) {
+        & $Cmd[0] @rest 2>&1 | Out-Null
+    } else {
+        & $Cmd[0] @rest 2>&1 | ForEach-Object { Write-Host $_ }
+    }
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = $old
+    return $code
+}
+
 $inRepo = $false
 if ($PSScriptRoot) {
-    git -C $PSScriptRoot rev-parse --is-inside-work-tree 2>$null | Out-Null
-    if ($LASTEXITCODE -eq 0) { $inRepo = $true }
+    if ((Invoke-Native -Quiet -Cmd @("git", "-C", $PSScriptRoot, "rev-parse", "--is-inside-work-tree")) -eq 0) {
+        $inRepo = $true
+    }
 }
 
 if ($inRepo) {
     # Caso 1: dentro do repositorio clonado
     Say ("==> Repositorio detectado em " + $PSScriptRoot + " -- git pull")
-    git -C $PSScriptRoot pull --ff-only
-    if ($LASTEXITCODE -ne 0) {
+    if ((Invoke-Native -Cmd @("git", "-C", $PSScriptRoot, "pull", "--ff-only")) -ne 0) {
         Err "Falha no git pull (ha alteracoes locais nao commitadas?)."
         exit 1
     }
@@ -62,8 +80,7 @@ if ($inRepo) {
     try {
         Invoke-WebRequest -UseBasicParsing -Uri $REPO_RAW -OutFile $tmp
         # Sanidade: tem que compilar antes de instalar por cima do atual.
-        & $python -m py_compile $tmp
-        if ($LASTEXITCODE -ne 0) {
+        if ((Invoke-Native -Quiet -Cmd @($python, "-m", "py_compile", $tmp)) -ne 0) {
             Err "O arquivo baixado nao e um getex.py valido -- abortando (nada foi alterado)."
             exit 1
         }

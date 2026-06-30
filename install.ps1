@@ -69,8 +69,14 @@ if ($userPath -notlike "*$dir*") {
 # O curses nao e nativo no Windows. Tentamos instalar, mas SEM abortar o
 # install caso o pip esteja com problema: o getex ja foi instalado acima.
 function Test-Curses {
-    & $python -c "import curses" 2>$null
-    return ($LASTEXITCODE -eq 0)
+    # EAP local: native commands que escrevem no stderr nao podem virar erro
+    # fatal aqui (o "import curses" falha de proposito quando ainda nao existe).
+    $old = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    & $python -c "import curses" 2>&1 | Out-Null
+    $ok = ($LASTEXITCODE -eq 0)
+    $ErrorActionPreference = $old
+    return $ok
 }
 
 if (Test-Curses) {
